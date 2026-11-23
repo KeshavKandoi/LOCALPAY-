@@ -1,6 +1,6 @@
 # Quick start
 
-Start the stack using the [installation guide](installation.md). Open `http://127.0.0.1:3000`, sign in with the configured administration token, and create a project. Issue a test credential in Settings and save the one-time secret in your local test environment.
+Start the stack using the [installation guide](installation.md). Open `http://127.0.0.1:3000`, create an account or sign in, and create a project. Issue a test credential in Settings and save the one-time secret in your local test environment.
 
 Open **Payment Simulator** to create an order, simulate authorization, capture the payment, and issue a refund. Open **API Workspace** to edit and send the same gateway requests and inspect their responses. [API Workspace and simulator](api-workspace.md)
 

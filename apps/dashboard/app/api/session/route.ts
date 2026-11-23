@@ -1,48 +1,64 @@
 import { BodyTooLarge, boundedBody } from "@/lib/request";
 import { NextRequest, NextResponse } from "next/server";
-import { newSession, sameOrigin, secureCookies, sessionName, sessionSeconds, tokenMatches, validSession } from "@/lib/session";
+import { accountRequest, sameOrigin, secureCookies, sessionName, sessionSeconds, validSessionToken } from "@/lib/session";
 
-let failureWindow = 0;
-let rejectedLogins = 0;
-
-function failedLogin(): NextResponse {
-  const now = Date.now();
-  if (now >= failureWindow) {
-    failureWindow = now + 30000;
-    rejectedLogins = 0;
-  }
-  rejectedLogins += 1;
-  if (rejectedLogins > 20) {
-    const retry = Math.ceil((failureWindow - now) / 1000);
-    return NextResponse.json({ error: "Too many unsuccessful attempts" }, { status: 429, headers: { "Retry-After": String(retry) } });
-  }
-  return NextResponse.json({ error: "Invalid administration token" }, { status: 401 });
+function json(body: object, status = 200, retry?: string | null) {
+  return NextResponse.json(body, { status, headers: { "Cache-Control": "no-store", ...(retry ? { "Retry-After": retry } : {}) } });
 }
 
-export function GET(request: NextRequest) {
-  return NextResponse.json({ authenticated: validSession(request.cookies.get(sessionName)?.value) }, { headers: { "Cache-Control": "no-store" } });
+function setCookie(request: Request, response: NextResponse, value: string) {
+  response.cookies.set(sessionName, value, { httpOnly: true, sameSite: "strict", secure: secureCookies(request), path: "/", maxAge: value ? sessionSeconds : 0 });
+  return response;
 }
 
-export async function POST(request: NextRequest) {
-  if (!sameOrigin(request)) return NextResponse.json({ error: "Invalid origin" }, { status: 403 });
-  let body: { token?: unknown };
+export async function GET(request: NextRequest) {
+  const token = request.cookies.get(sessionName)?.value;
+  if (!validSessionToken(token)) return json({ authenticated: false });
   try {
-    body = JSON.parse(await boundedBody(request, 1024));
-  } catch (error) {
-    if (error instanceof BodyTooLarge) return NextResponse.json({ error: "Request too large" }, { status: 413 });
-    return NextResponse.json({ error: "Invalid request" }, { status: 400 });
+    const upstream = await accountRequest("session", token);
+    if (upstream.status === 401) return setCookie(request, json({ authenticated: false }), "");
+    if (!upstream.ok) return json({ error: "Session service unavailable." }, 503);
+    const { username } = await upstream.json();
+    return json({ authenticated: true, username });
+  } catch {
+    return json({ error: "Session service unavailable." }, 503);
   }
-  if (!body || typeof body.token !== "string" || !tokenMatches(body.token)) {
-    return failedLogin();
-  }
-  const response = NextResponse.json({ authenticated: true });
-  response.cookies.set(sessionName, newSession(), { httpOnly: true, sameSite: "strict", secure: secureCookies(), path: "/", maxAge: sessionSeconds });
-  return response;
 }
 
-export function DELETE(request: NextRequest) {
-  if (!sameOrigin(request)) return NextResponse.json({ error: "Invalid origin" }, { status: 403 });
-  const response = NextResponse.json({ authenticated: false });
-  response.cookies.set(sessionName, "", { httpOnly: true, sameSite: "strict", secure: secureCookies(), path: "/", maxAge: 0 });
-  return response;
+async function change(request: NextRequest) {
+  if (!sameOrigin(request)) return json({ error: "Invalid origin." }, 403);
+  const token = request.cookies.get(sessionName)?.value;
+  const action = request.nextUrl.searchParams.get("action");
+  const registering = request.method === "POST" && action === "signup";
+  const path = request.method === "POST" ? registering ? "signup" : "login"
+    : request.method === "PATCH" ? "password" : action === "others" ? "other-sessions" : "session";
+  if (request.method !== "POST" && !validSessionToken(token)) {
+    if (request.method === "DELETE" && action !== "others") return setCookie(request, json({ authenticated: false }), "");
+    return json({ error: "Sign in to continue." }, 401);
+  }
+  try {
+    const body = request.method === "DELETE" ? undefined : await boundedBody(request, 4096);
+    const upstream = await accountRequest(path, request.method === "POST" ? undefined : token, { method: request.method, body });
+    if (!upstream.ok) {
+      const message = upstream.status === 429 ? "Too many attempts. Try again shortly."
+        : upstream.status === 409 ? "Could not register with those details."
+        : upstream.status === 422 ? "Check the username and password requirements and confirm the passwords match."
+        : upstream.status === 403 ? "Incorrect current password."
+        : upstream.status === 401 ? request.method === "POST" ? "Incorrect username or password." : "Sign in to continue."
+        : "Account service unavailable.";
+      return json({ error: message }, upstream.status, upstream.headers.get("Retry-After"));
+    }
+    if (request.method === "DELETE") {
+      return action === "others" ? json({ revoked: true }) : setCookie(request, json({ authenticated: false }), "");
+    }
+    const result = await upstream.json();
+    if (request.method === "PATCH") return json({ username: result.username });
+    if (!validSessionToken(result.token)) return json({ error: "Account service unavailable." }, 502);
+    return setCookie(request, json({ authenticated: true, username: result.username }, registering ? 201 : 200), result.token);
+  } catch (error) {
+    if (error instanceof BodyTooLarge) return json({ error: "Request too large." }, 413);
+    return json({ error: "Account service unavailable." }, 503);
+  }
 }
+
+export { change as POST, change as PATCH, change as DELETE };

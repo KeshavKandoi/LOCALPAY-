@@ -1,6 +1,6 @@
 import { NextRequest, NextResponse } from "next/server";
 import { BodyTooLarge, boundedBody } from "@/lib/request";
-import { sameOrigin, sessionName, validSession } from "@/lib/session";
+import { accountRequest, sameOrigin, sessionName, validSessionToken } from "@/lib/session";
 
 const payment = "pay_[a-zA-Z0-9]+";
 const refund = "rfnd_[a-zA-Z0-9]+";
@@ -18,7 +18,8 @@ function fail(error: string, status: number) {
 }
 
 async function handle(request: NextRequest, context: { params: Promise<{ segments: string[] }> }) {
-  if (!validSession(request.cookies.get(sessionName)?.value)) return fail("Sign in required.", 401);
+  const token = request.cookies.get(sessionName)?.value;
+  if (!validSessionToken(token)) return fail("Sign in required.", 401);
   if (request.headers.has("origin") ? !sameOrigin(request) : request.headers.get("sec-fetch-site") !== "same-origin") {
     return fail("Invalid origin.", 403);
   }
@@ -41,6 +42,9 @@ async function handle(request: NextRequest, context: { params: Promise<{ segment
   const root = process.env.LOCALPAY_API_URL ?? "http://127.0.0.1:8000";
   const signal = AbortSignal.any([request.signal, AbortSignal.timeout(10000)]);
   try {
+    const scope = await accountRequest(health ? "session" : "projects/" + project, token);
+    await scope.body?.cancel();
+    if (!scope.ok) return fail("Account or project unavailable.", scope.status === 401 || scope.status === 404 ? scope.status : 502);
     const body = read ? undefined : await boundedBody(request, limit, true);
     const headers = new Headers();
     for (const name of ["accept", "content-type", "x-localpay-idempotency-key", "x-refund-idempotency"]) {

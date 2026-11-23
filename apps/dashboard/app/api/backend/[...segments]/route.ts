@@ -1,6 +1,6 @@
 import { BodyTooLarge, boundedBody } from "@/lib/request";
 import { NextRequest, NextResponse } from "next/server";
-import { sameOrigin, sessionName, validSession } from "@/lib/session";
+import { accountRequest, sameOrigin, sessionName, validSessionToken } from "@/lib/session";
 
 const uuid = "[0-9a-f]{8}(?:-[0-9a-f]{4}){3}-[0-9a-f]{12}";
 const projectPaths = new RegExp(
@@ -8,7 +8,8 @@ const projectPaths = new RegExp(
 );
 
 async function handle(request: NextRequest, context: { params: Promise<{ segments: string[] }> }) {
-  if (!validSession(request.cookies.get(sessionName)?.value)) {
+  const token = request.cookies.get(sessionName)?.value;
+  if (!validSessionToken(token)) {
     return NextResponse.json({ error: "Sign in required" }, { status: 401 });
   }
   if (request.method !== "GET" && !sameOrigin(request)) {
@@ -17,17 +18,24 @@ async function handle(request: NextRequest, context: { params: Promise<{ segment
   const { segments } = await context.params;
   const path = segments.join("/");
   const root = process.env.LOCALPAY_API_URL ?? "http://127.0.0.1:8000";
+  const projectResource = new RegExp("^projects/" + uuid + "$").test(path);
   const destination = path === "health" || path === "ready"
     ? "/" + path
-    : path === "projects" || projectPaths.test(path) ? "/localpay/admin/v1/" + path : null;
+    : path === "projects" || projectResource ? "/localpay/account/v1/" + path
+      : projectPaths.test(path) ? "/account/localpay/admin/v1/" + path : null;
   if (!destination) return NextResponse.json({ error: "Resource unavailable" }, { status: 404 });
   try {
+    if (path === "health" || path === "ready") {
+      const account = await accountRequest("session", token);
+      await account.body?.cancel();
+      if (!account.ok) return NextResponse.json({ error: "Account unavailable" }, { status: account.status === 401 ? 401 : 502 });
+    }
     const target = new URL(destination, root);
     target.search = request.nextUrl.search;
     const response = await fetch(target, {
       method: request.method, cache: "no-store", redirect: "error", signal: AbortSignal.timeout(8000),
       body: request.method === "GET" ? undefined : await boundedBody(request, 196608),
-      headers: { Authorization: "Bearer " + process.env.LOCALPAY_ADMIN_TOKEN, "Content-Type": "application/json" },
+      headers: { Authorization: "Bearer " + token, "Content-Type": "application/json" },
     });
     const headers = new Headers({ "Cache-Control": "no-store", "X-Content-Type-Options": "nosniff" });
     for (const key of ["Content-Type", "Content-Disposition", "Content-Security-Policy", "X-Razorpay-Signature", "X-Razorpay-Event-Id"]) {
