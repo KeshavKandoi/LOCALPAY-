@@ -48,6 +48,7 @@ from app.services.delivery import (
     DeliveryClaim,
     DeliveryResult,
     claim_delivery,
+    due_deliveries,
     finish_delivery,
 )
 from app.services.payments import capture_payment
@@ -1178,3 +1179,168 @@ def test_outbox_concurrent_claims_and_retry_exhaustion(
         )
         row = session.get(WebhookDelivery, (project_id, delivery_id))
         assert row is not None and row.status == "failed" and row.attempt_count == 1
+
+
+def test_chaos_schedule_is_delayed_ordered_and_duplicate_safe(
+    admin_client: TestClient, schema_settings: Settings, database: Engine
+) -> None:
+    project = add_project(admin_client, "chaos-owner")
+    outsider = add_project(admin_client, "chaos-outsider")
+    credential = issue(admin_client, project)
+    auth = (credential["key_id"], credential["secret"])
+    captured_payment(admin_client, auth)
+    root = f"{ADMIN_URL}/{project}"
+    secret = uuid4().hex
+    endpoint = admin_client.post(
+        f"{root}/webhook-endpoints",
+        json={
+            "url": "http://example.test",
+            "secret": secret,
+            "enabled_events": ["payment.authorized", "payment.captured"],
+        },
+    ).json()
+    events = {
+        row["event_type"]: row["id"]
+        for row in admin_client.get(f"{root}/webhook-events").json()
+    }
+    assert (
+        admin_client.post(
+            f"{root}/webhook-scenarios",
+            json={"name": "invalid", "config": {"duplicate_count": 65}},
+        ).status_code
+        == 422
+    )
+    scenario = admin_client.post(
+        f"{root}/webhook-scenarios",
+        json={
+            "name": "reordered duplicates",
+            "config": {
+                "delay_ms": 10000,
+                "duplicate_count": 2,
+                "reorder_events": True,
+                "burst_interval_ms": 50,
+                "failure_mode": "invalid_signature",
+            },
+        },
+    )
+    assert scenario.status_code == 201, scenario.text
+    path = f"{root}/webhook-scenarios/{scenario.json()['id']}/runs"
+    start = {"endpoint_id": endpoint["id"], "event_ids": list(events.values())}
+    assert (
+        admin_client.post(
+            path.replace(str(project), str(outsider)), json=start
+        ).status_code
+        == 404
+    )
+    result = admin_client.post(path, json=start)
+    assert result.status_code == 201, result.text
+    run_id = result.json()["id"]
+    run_url = f"{root}/webhook-runs/{run_id}"
+    rows = admin_client.get(f"{run_url}/deliveries").json()
+    assert [row["event_id"] for row in rows] == [
+        events["payment.captured"],
+        events["payment.captured"],
+        events["payment.authorized"],
+        events["payment.authorized"],
+    ]
+    assert rows[0]["next_retry_at"] < rows[-1]["next_retry_at"]
+    now = datetime.now(UTC)
+    with Session(database) as session:
+        assert due_deliveries(session, now) == []
+        assert due_deliveries(session, now + timedelta(seconds=20)) == [
+            (project, UUID(rows[0]["id"])),
+        ]
+    accepted_ids = []
+    timestamp = now + timedelta(seconds=20)
+    for row in rows:
+        delivery_id = UUID(row["id"])
+        with Session(database) as session, session.begin():
+            assert due_deliveries(session, timestamp) == [(project, delivery_id)]
+            claim = claim_delivery(
+                session, project, delivery_id, timestamp, schema_settings
+            )
+            assert claim is not None
+            assert claim.headers["X-LocalPay-Scenario-Execution"] == run_id
+            assert not verify_signature(
+                claim.payload, secret.encode(), claim.headers["X-Razorpay-Signature"]
+            )
+            accepted_ids.append(claim.headers["X-Razorpay-Event-Id"])
+        with Session(database) as session, session.begin():
+            assert finish_delivery(
+                session,
+                claim,
+                DeliveryResult(http_status=200),
+                timestamp,
+                1,
+                schema_settings,
+            )
+    assert accepted_ids[0] == accepted_ids[1] != accepted_ids[2] == accepted_ids[3]
+    result = admin_client.get(run_url).json()
+    assert result["status"] == "succeeded"
+    assert result["result"]["delivered"] == 4
+    repeated = admin_client.post(path, json=start)
+    assert repeated.status_code == 201
+    repeated_rows = admin_client.get(
+        f"{root}/webhook-runs/{repeated.json()['id']}/deliveries"
+    ).json()
+    assert [row["event_id"] for row in repeated_rows] == [
+        row["event_id"] for row in rows
+    ]
+
+
+def test_chaos_worker_interruption_exhausts_retry_budget(
+    admin_client: TestClient, schema_settings: Settings, database: Engine
+) -> None:
+    project = add_project(admin_client, "chaos-lease")
+    credential = issue(admin_client, project)
+    auth = (credential["key_id"], credential["secret"])
+    captured_payment(admin_client, auth)
+    root = f"{ADMIN_URL}/{project}"
+    endpoint = admin_client.post(
+        f"{root}/webhook-endpoints",
+        json={
+            "url": "http://example.test",
+            "secret": uuid4().hex,
+            "enabled_events": ["payment.captured"],
+        },
+    ).json()
+    event = next(
+        row
+        for row in admin_client.get(f"{root}/webhook-events").json()
+        if row["event_type"] == "payment.captured"
+    )
+    scenario = admin_client.post(
+        f"{root}/webhook-scenarios",
+        json={
+            "name": "interruption",
+            "config": {"failure_mode": "worker_interruption", "retry_limit": 1},
+        },
+    ).json()
+    run = admin_client.post(
+        f"{root}/webhook-scenarios/{scenario['id']}/runs",
+        json={"endpoint_id": endpoint["id"], "event_ids": [event["id"]]},
+    ).json()
+    now = datetime.now(UTC)
+    with Session(database) as session, session.begin():
+        [(project_id, delivery_id)] = due_deliveries(session, now)
+        claim = claim_delivery(session, project_id, delivery_id, now, schema_settings)
+        assert claim is not None and claim.fault == "worker_interruption"
+    with Session(database) as session, session.begin():
+        assert (
+            claim_delivery(
+                session,
+                project_id,
+                delivery_id,
+                now + timedelta(seconds=3),
+                schema_settings,
+            )
+            is None
+        )
+    assert (
+        admin_client.get(f"{root}/webhook-runs/{run['id']}").json()["status"]
+        == "failed"
+    )
+    attempts = admin_client.get(
+        f"{root}/webhook-deliveries/{delivery_id}/attempts"
+    ).json()
+    assert len(attempts) == 1 and attempts[0]["error_code"] == "lease_expired"

@@ -239,7 +239,28 @@ class WebhookDelivery(Base, ProjectRecord):
             ["project_id", "endpoint_id"],
             ["webhook_endpoints.project_id", "webhook_endpoints.id"],
         ),
-        UniqueConstraint("project_id", "event_id", "endpoint_id"),
+        ForeignKeyConstraint(
+            ["project_id", "execution_id"],
+            ["scenario_executions.project_id", "scenario_executions.id"],
+        ),
+        ForeignKeyConstraint(
+            ["project_id", "after_delivery_id"],
+            ["webhook_deliveries.project_id", "webhook_deliveries.id"],
+        ),
+        Index(
+            "uq_webhook_deliveries_regular",
+            "project_id",
+            "event_id",
+            "endpoint_id",
+            unique=True,
+            postgresql_where=text("execution_id IS NULL"),
+        ),
+        Index("ix_webhook_deliveries_project_execution", "project_id", "execution_id"),
+        Index(
+            "ix_webhook_deliveries_project_predecessor",
+            "project_id",
+            "after_delivery_id",
+        ),
         Index("ix_webhook_deliveries_status_retry", "status", "next_retry_at"),
         Index("ix_webhook_deliveries_project_endpoint", "project_id", "endpoint_id"),
         CheckConstraint("attempt_count >= 0", name="attempt_count"),
@@ -256,6 +277,8 @@ class WebhookDelivery(Base, ProjectRecord):
     next_retry_at: Mapped[datetime] = mapped_column(
         DateTime(timezone=True), server_default=func.now()
     )
+    execution_id: Mapped[UUID | None] = mapped_column()
+    after_delivery_id: Mapped[UUID | None] = mapped_column()
     lease_token: Mapped[UUID | None] = mapped_column()
     leased_until: Mapped[datetime | None] = mapped_column(DateTime(timezone=True))
     delivery_metadata: Mapped[JsonObject] = mapped_column(
@@ -274,13 +297,27 @@ class WebhookDeliveryAttempt(Base, ProjectRecord):
             ["project_id", "endpoint_id"],
             ["webhook_endpoints.project_id", "webhook_endpoints.id"],
         ),
-        UniqueConstraint("project_id", "endpoint_id", "event_id", "attempt_number"),
+        ForeignKeyConstraint(
+            ["project_id", "delivery_id"],
+            ["webhook_deliveries.project_id", "webhook_deliveries.id"],
+        ),
+        UniqueConstraint("project_id", "delivery_id", "attempt_number"),
+        Index(
+            "uq_webhook_attempts_legacy",
+            "project_id",
+            "endpoint_id",
+            "event_id",
+            "attempt_number",
+            unique=True,
+            postgresql_where=text("delivery_id IS NULL"),
+        ),
         Index("ix_webhook_attempts_project_event", "project_id", "event_id"),
         CheckConstraint("attempt_number > 0", name="positive_attempt"),
         CheckConstraint("http_status BETWEEN 100 AND 599", name="http_status"),
         CheckConstraint("duration_ms >= 0", name="duration"),
     )
 
+    delivery_id: Mapped[UUID | None] = mapped_column()
     event_id: Mapped[UUID] = mapped_column()
     endpoint_id: Mapped[UUID] = mapped_column()
     attempt_number: Mapped[int] = mapped_column()

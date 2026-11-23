@@ -82,3 +82,29 @@ def test_transport_classifies_responses(
     assert result.retryable is retryable
     if isinstance(behavior, int):
         assert result.http_status == behavior
+
+
+@pytest.mark.parametrize(
+    ("fault", "status", "reason"),
+    [
+        ("http_500", 500, "simulated_http_500"),
+        ("http_429", 429, "simulated_http_429"),
+        ("timeout", None, "simulated_timeout"),
+        ("reset", None, "simulated_connection_reset"),
+        ("unavailable", None, "simulated_unavailable"),
+    ],
+)
+def test_simulated_failures_record_evidence_without_network(
+    monkeypatch: MonkeyPatch, fault: str, status: int | None, reason: str
+) -> None:
+    monkeypatch.setenv(
+        "LOCALPAY_DATABASE_URL", "postgresql+psycopg://localhost/localpay"
+    )
+    monkeypatch.setenv("LOCALPAY_REDIS_URL", "redis://localhost")
+    claim = DeliveryClaim(
+        uuid4(), uuid4(), uuid4(), 1, "http://receiver.test/hook", b"{}", {}, fault
+    )
+    result = send(claim, Settings())
+    assert result.http_status == status
+    assert result.error_code == reason
+    assert result.retryable

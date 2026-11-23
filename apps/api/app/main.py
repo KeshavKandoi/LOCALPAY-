@@ -17,6 +17,7 @@ from app.api.orders import orders_router
 from app.api.payments import payments_router, simulation_router
 from app.api.projects import admin_router, project_router
 from app.api.refunds import refund_router, refund_simulation_router
+from app.api.webhook_chaos import chaos_router
 from app.api.webhooks import webhook_router
 from app.core.errors import install_error_handling
 from app.core.logging import configure_logging
@@ -85,6 +86,7 @@ def create_app(settings: Settings | None = None) -> FastAPI:
     app.include_router(refund_router)
     app.include_router(refund_simulation_router)
     app.include_router(webhook_router)
+    app.include_router(chaos_router)
 
     @app.get("/health")
     def health() -> Health:

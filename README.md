@@ -94,3 +94,9 @@ With the admin token, register an endpoint at `POST /localpay/admin/v1/projects/
 Configure `LOCALPAY_WEBHOOK_TARGETS` as JSON mapping an allowed receiver origin to its local IP address. For example, `{"http://receiver:9000":"172.20.0.10"}` allows that exact scheme, host, and port and pins transport to that IP. From within Compose, use the receiver's address on a shared network. The transport runs without proxies or redirects. Public and link-local addresses are rejected.
 
 Restart Compose after changing the environment. The scheduler finds committed outbox rows and the Celery worker claims and delivers them. HTTP 408, 429, 5xx, and transport failures retry with bounded exponential backoff. A lease lets another worker recover an interrupted delivery. The receiver should deduplicate using `X-Razorpay-Event-Id`. List deliveries and their attempts under the project's `/webhook-deliveries` administrative API.
+
+## Run webhook chaos scenarios
+
+Create a scenario at `POST /localpay/admin/v1/projects/{project_id}/webhook-scenarios` with a name and a config such as `{"delay_ms":1000,"duplicate_count":3,"failure_mode":"http_500","failure_attempts":1}`. Start a run at the scenario's `/runs` endpoint with an `endpoint_id` and `event_ids` from that project.
+
+Runs can schedule delays and bursts, send duplicate events with stable IDs, reverse selected events, and simulate HTTP 500, rate limiting, timeout, reset, temporary unavailability, invalid signatures, or worker interruption. Simulated failures are labeled in the attempt records. Inspect a run and its scheduled jobs under `/webhook-runs/{execution_id}`.

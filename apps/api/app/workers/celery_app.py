@@ -64,7 +64,7 @@ def deliver_webhook(project_id: str, delivery_id: str) -> None:
                 datetime.now(UTC),
                 settings,
             )
-        if claim is None:
+        if claim is None or claim.fault == "worker_interruption":
             return
         started = monotonic()
         result = send(claim, settings)

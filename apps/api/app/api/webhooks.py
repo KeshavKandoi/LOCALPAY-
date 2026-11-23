@@ -170,6 +170,7 @@ class DeliveryView(BaseModel):
     event_id: UUID
     endpoint_id: UUID
     status: str
+    execution_id: UUID | None
     attempt_count: int
     next_retry_at: datetime
 
@@ -211,8 +212,7 @@ def get_attempts(
         select(WebhookDeliveryAttempt)
         .where(
             WebhookDeliveryAttempt.project_id == project_id,
-            WebhookDeliveryAttempt.event_id == delivery.event_id,
-            WebhookDeliveryAttempt.endpoint_id == delivery.endpoint_id,
+            WebhookDeliveryAttempt.delivery_id == delivery.id,
         )
         .order_by(WebhookDeliveryAttempt.attempt_number)
     )
