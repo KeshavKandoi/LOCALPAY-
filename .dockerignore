@@ -11,3 +11,7 @@ node_modules
 **/.next
 **/playwright-report
 **/test-results
+.env.*
+**/.env
+**/.env.*
+.localpay-ci
