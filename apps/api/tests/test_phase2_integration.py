@@ -266,7 +266,7 @@ def test_migrate_baseline_to_head_and_back(schema_settings: Settings) -> None:
             command.upgrade(config, "head")
             assert (
                 connection.scalar(text("SELECT version_num FROM alembic_version"))
-                == "0002_project_models"
+                == "0003_rotation_and_models"
             )
             assert set(inspect(connection).get_table_names()) == set(
                 Base.metadata.tables
@@ -280,7 +280,7 @@ def test_migrate_baseline_to_head_and_back(schema_settings: Settings) -> None:
             command.upgrade(config, "head")
             assert (
                 connection.scalar(text("SELECT version_num FROM alembic_version"))
-                == "0002_project_models"
+                == "0003_rotation_and_models"
             )
     finally:
         engine.dispose()
@@ -313,7 +313,9 @@ def test_project_foreign_keys_and_financial_constraints(database: Engine) -> Non
         )
         session.add(payment)
         session.flush()
-        refund = Refund(project_id=first.id, payment_id=payment.id, amount=100)
+        refund = Refund(
+            project_id=first.id, payment_id=payment.id, amount=100, currency="INR"
+        )
         delivery = WebhookDeliveryAttempt(
             project_id=first.id,
             event_id=event.id,
@@ -333,8 +335,10 @@ def test_project_foreign_keys_and_financial_constraints(database: Engine) -> Non
             Payment(
                 project_id=second.id, order_id=order.id, amount=500, currency="INR"
             ),
-            Refund(project_id=second.id, payment_id=payment.id, amount=100),
-            Refund(project_id=first.id, payment_id=uuid4(), amount=100),
+            Refund(
+                project_id=second.id, payment_id=payment.id, amount=100, currency="INR"
+            ),
+            Refund(project_id=first.id, payment_id=uuid4(), amount=100, currency="INR"),
             WebhookDeliveryAttempt(
                 project_id=second.id,
                 event_id=event.id,
@@ -364,7 +368,9 @@ def test_project_foreign_keys_and_financial_constraints(database: Engine) -> Non
                 amount_refunded=1,
                 currency="INR",
             ),
-            Refund(project_id=first.id, payment_id=payment.id, amount=-1),
+            Refund(
+                project_id=first.id, payment_id=payment.id, amount=-1, currency="INR"
+            ),
         ):
             assert_rejected(session, invalid_amount, "23514")
 
@@ -404,3 +410,72 @@ def test_project_foreign_keys_and_financial_constraints(database: Engine) -> Non
             ),
         ):
             assert_rejected(session, duplicate, "23505")
+
+
+def test_rotation_is_atomic_and_scoped(
+    admin_client: TestClient, database: Engine
+) -> None:
+    first = add_project(admin_client, "rotation-owner")
+    other = add_project(admin_client, "rotation-other")
+    key = issue(admin_client, first)
+    assert (
+        admin_client.post(
+            f"{ADMIN_URL}/{other}/credentials/{key['id']}/rotate"
+        ).status_code
+        == 404
+    )
+    path = f"{ADMIN_URL}/{first}/credentials/{key['id']}/rotate"
+    response = admin_client.post(path)
+    assert response.status_code == 201
+    assert response.headers["cache-control"] == "no-store"
+    replacement = response.json()
+    assert replacement["rotated_from_id"] == key["id"]
+    assert replacement["enabled"]
+    assert replacement["label"] == key["label"]
+    assert admin_client.post(path).status_code == 404
+    assert (
+        admin_client.get(PROJECT_URL, auth=(key["key_id"], key["secret"])).status_code
+        == 401
+    )
+    new_auth = (replacement["key_id"], replacement["secret"])
+    assert admin_client.get(PROJECT_URL, auth=new_auth).json()["id"] == str(first)
+    with Session(database) as session, session.begin():
+        project = session.get(Project, first)
+        assert project is not None
+        project.status = "disabled"
+    assert admin_client.get(PROJECT_URL, auth=new_auth).status_code == 401
+
+
+def test_supplement_migrates_existing_money_records(schema_settings: Settings) -> None:
+    engine = build_engine(schema_settings)
+    try:
+        with engine.connect() as connection:
+            config = Config("alembic.ini", attributes={"connection": connection})
+            command.upgrade(config, "0002_project_models")
+            ids = dict(
+                zip(
+                    ("project", "order", "payment", "refund"),
+                    (uuid4() for _ in range(4)),
+                    strict=True,
+                )
+            )
+            statements = (
+                "INSERT INTO projects (id, slug, name) VALUES (:project, 'existing', 'Existing')",
+                "INSERT INTO orders (project_id, id, amount, amount_paid, currency) "
+                "VALUES (:project, :order, 200, 100, 'USD')",
+                "INSERT INTO payments (project_id, id, order_id, amount, amount_captured, currency) "
+                "VALUES (:project, :payment, :order, 100, 100, 'USD')",
+                "INSERT INTO refunds (project_id, id, payment_id, amount) "
+                "VALUES (:project, :refund, :payment, 10)",
+            )
+            with connection.begin():
+                for statement in statements:
+                    connection.execute(text(statement), ids)
+            command.upgrade(config, "head")
+            assert connection.scalar(text("SELECT amount_due FROM orders")) == 100
+            assert (
+                connection.scalar(text("SELECT amount_authorized FROM payments")) == 100
+            )
+            assert connection.scalar(text("SELECT currency FROM refunds")) == "USD"
+    finally:
+        engine.dispose()

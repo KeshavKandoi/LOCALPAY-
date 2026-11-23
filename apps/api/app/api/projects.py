@@ -13,6 +13,7 @@ from app.services.credentials import (
     issue_credential,
     list_credentials,
     revoke_credential,
+    rotate_credential,
 )
 
 admin_router = APIRouter(
@@ -44,7 +45,9 @@ class ProjectView(BaseModel):
     id: UUID
     slug: str
     name: str
+    status: str
     created_at: datetime
+    updated_at: datetime
 
 
 class CredentialCreate(BaseModel):
@@ -61,6 +64,8 @@ class CredentialView(BaseModel):
     label: str
     created_at: datetime
     revoked_at: datetime | None
+    enabled: bool
+    rotated_from_id: UUID | None
 
 
 class IssuedCredential(CredentialView):
@@ -121,6 +126,22 @@ def disable_credential(
         if not revoke_credential(session, project_id, credential_id):
             raise HTTPException(404)
     return Response(status_code=204)
+
+
+@admin_router.post("/{project_id}/credentials/{credential_id}/rotate", status_code=201)
+def replace_credential(
+    project_id: UUID, credential_id: UUID, response: Response, session: DatabaseSession
+) -> IssuedCredential:
+    with session.begin():
+        rotated = rotate_credential(session, project_id, credential_id)
+        if rotated is None:
+            raise HTTPException(404)
+        credential, secret = rotated
+        result = IssuedCredential(
+            **CredentialView.model_validate(credential).model_dump(), secret=secret
+        )
+    response.headers["Cache-Control"] = "no-store"
+    return result
 
 
 @project_router.get("/project")

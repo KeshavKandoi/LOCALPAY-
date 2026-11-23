@@ -26,7 +26,9 @@ def authenticate_project(session: Session, key_id: str, secret: str) -> UUID | N
     row = session.execute(
         select(
             ApiCredential.project_id, ApiCredential.verifier, ApiCredential.revoked_at
-        ).where(ApiCredential.key_id == key_id)
+        )
+        .join(Project, Project.id == ApiCredential.project_id)
+        .where(ApiCredential.key_id == key_id, Project.status == "active")
     ).one_or_none()
     candidate = credential_verifier(key_id, secret)
     matches = compare_digest(candidate, row.verifier if row else bytes(32))
@@ -45,7 +47,11 @@ def create_project(session: Session, slug: str, name: str) -> Project:
 
 
 def issue_credential(
-    session: Session, project_id: UUID, label: str
+    session: Session,
+    project_id: UUID,
+    label: str,
+    *,
+    rotated_from_id: UUID | None = None,
 ) -> tuple[ApiCredential, str]:
     key_id = f"lp_test_{token_hex(16)}"
     secret = f"lp_secret_{token_hex(32)}"
@@ -53,12 +59,35 @@ def issue_credential(
         project_id=project_id,
         key_id=key_id,
         label=label,
+        rotated_from_id=rotated_from_id,
         verifier=credential_verifier(key_id, secret),
     )
     session.add(credential)
     session.flush()
     record_admin_action(session, project_id, "credential.issued", credential.id)
     return credential, secret
+
+
+def rotate_credential(
+    session: Session, project_id: UUID, credential_id: UUID
+) -> tuple[ApiCredential, str] | None:
+    label = session.scalar(
+        update(ApiCredential)
+        .where(
+            ApiCredential.project_id == project_id,
+            ApiCredential.id == credential_id,
+            ApiCredential.revoked_at.is_(None),
+        )
+        .values(revoked_at=datetime.now(UTC))
+        .returning(ApiCredential.label)
+    )
+    if label is None:
+        return None
+    replacement = issue_credential(
+        session, project_id, label, rotated_from_id=credential_id
+    )
+    record_admin_action(session, project_id, "credential.rotated", credential_id)
+    return replacement
 
 
 def list_credentials(session: Session, project_id: UUID) -> list[ApiCredential]:

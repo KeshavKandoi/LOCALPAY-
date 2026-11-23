@@ -59,8 +59,9 @@ Generate a dedicated administration token with `openssl rand -hex 32`. Set `LOCA
 | POST | `/localpay/admin/v1/projects/{project_id}/credentials` | `{"label":"CI"}` |
 | GET | `/localpay/admin/v1/projects/{project_id}/credentials` | |
 | DELETE | `/localpay/admin/v1/projects/{project_id}/credentials/{credential_id}` | |
+| POST | `/localpay/admin/v1/projects/{project_id}/credentials/{credential_id}/rotate` | |
 
-The credential creation response returns a LocalPay key ID and its secret once. Store the secret in the integration's test environment. Credential listings return metadata, including the revocation timestamp. Project creation, issuance, and revocation are audited in the same database transaction as the change.
+The credential creation response returns a LocalPay key ID and its secret once. Store the secret in the integration's test environment. Credential listings return metadata, including the revocation timestamp. Rotation revokes the old credential and issues a replacement with the same label in one transaction. Keep the replacement secret from the rotation response. Project creation, issuance, revocation, and rotation are audited in the same database transaction as the change.
 
 Use the issued key ID and secret as the HTTP Basic username and password for `GET /localpay/v1/project`. The credential determines the project returned by that endpoint. LocalPay accepts only credentials issued by this installation. Configure TLS when forwarding the API beyond the local host.
 
