@@ -95,6 +95,27 @@ services:
       worker:
         condition: service_healthy
 
+  dashboard:
+    image: localpay-dashboard:dev
+    pull_policy: never
+    build:
+      context: .
+      dockerfile: infra/dashboard.Dockerfile
+    environment:
+      LOCALPAY_API_URL: http://api:8000
+      LOCALPAY_ADMIN_TOKEN: ${LOCALPAY_ADMIN_TOKEN:-}
+      LOCALPAY_DASHBOARD_SECURE_COOKIE: ${LOCALPAY_DASHBOARD_SECURE_COOKIE:-false}
+    ports:
+      - "127.0.0.1:${LOCALPAY_DASHBOARD_PORT:-3000}:3000"
+    depends_on:
+      api:
+        condition: service_healthy
+    healthcheck:
+      test: ["CMD", "node", "-e", "fetch('http://127.0.0.1:3000/api/session').then(r=>{if(!r.ok)process.exit(1)}).catch(()=>process.exit(1))"]
+      interval: 5s
+      timeout: 4s
+      retries: 12
+
   verify:
     <<: *app
     profiles: ["test"]

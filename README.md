@@ -116,3 +116,9 @@ For business-state assertions, set the suite's `verification_url` to an allowlis
 ## Export reliability reports
 
 Open the run's `/report/json` or `/report/html` administrative route for a report with assertion totals, payment transitions, webhook attempts, recorded latency, and diagnostics. A diagnostic identifies confirmed findings only when the recorded scenario and observations establish them. Missing latency and unavailable evidence remain visible in the export.
+
+## Use the dashboard
+
+Run Compose with the same `LOCALPAY_ADMIN_TOKEN` for the API and dashboard, then open `http://127.0.0.1:3000`. Use `LOCALPAY_DASHBOARD_PORT` to override the port. Sign in with the administration token, select a project, and inspect its activity, payment records, webhook attempts, chaos runs, and reports. The dashboard session uses an HttpOnly cookie. Set `LOCALPAY_DASHBOARD_SECURE_COOKIE=true` when serving it through HTTPS.
+
+To check the dashboard locally, run `npm ci`, `npm run lint`, and `npm run typecheck` in `apps/dashboard`. Run `npm test` against an isolated Compose project with `LOCALPAY_E2E_TOKEN` set to that project's dashboard token, and with `LOCALPAY_E2E_API_URL` and `LOCALPAY_E2E_DASHBOARD_URL` set when using custom ports.
