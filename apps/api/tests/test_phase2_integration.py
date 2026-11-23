@@ -5,6 +5,7 @@ from uuid import UUID, uuid4
 
 import pytest
 from alembic.config import Config
+from alembic.script import ScriptDirectory
 from fastapi.testclient import TestClient
 from pydantic import PostgresDsn, SecretStr
 from sqlalchemy import Engine, inspect, select, text
@@ -266,7 +267,7 @@ def test_migrate_baseline_to_head_and_back(schema_settings: Settings) -> None:
             command.upgrade(config, "head")
             assert (
                 connection.scalar(text("SELECT version_num FROM alembic_version"))
-                == "0003_rotation_and_models"
+                == ScriptDirectory.from_config(config).get_current_head()
             )
             assert set(inspect(connection).get_table_names()) == set(
                 Base.metadata.tables
@@ -280,7 +281,7 @@ def test_migrate_baseline_to_head_and_back(schema_settings: Settings) -> None:
             command.upgrade(config, "head")
             assert (
                 connection.scalar(text("SELECT version_num FROM alembic_version"))
-                == "0003_rotation_and_models"
+                == ScriptDirectory.from_config(config).get_current_head()
             )
     finally:
         engine.dispose()
@@ -479,3 +480,109 @@ def test_supplement_migrates_existing_money_records(schema_settings: Settings) -
             assert connection.scalar(text("SELECT currency FROM refunds")) == "USD"
     finally:
         engine.dispose()
+
+
+def test_order_contract_persistence_and_tenant_isolation(
+    admin_client: TestClient, database: Engine
+) -> None:
+    owner = add_project(admin_client, "orders-owner")
+    outsider = add_project(admin_client, "orders-outsider")
+    owner_key = issue(admin_client, owner)
+    outsider_key = issue(admin_client, outsider)
+    auth = (owner_key["key_id"], owner_key["secret"])
+    other_auth = (outsider_key["key_id"], outsider_key["secret"])
+    request = {
+        "amount": 5000,
+        "currency": "INR",
+        "receipt": "reference-a",
+        "notes": {"cart": "A"},
+    }
+    created = admin_client.post("/v1/orders", auth=auth, json=request)
+    assert created.status_code == 200, created.text
+    order = created.json()
+    assert order == {
+        **request,
+        "id": order["id"],
+        "entity": "order",
+        "amount_paid": 0,
+        "amount_due": 5000,
+        "offer_id": None,
+        "status": "created",
+        "attempts": 0,
+        "created_at": order["created_at"],
+    }
+    assert order["id"].startswith("order_") and len(order["id"]) == 20
+    assert isinstance(order["created_at"], int)
+    path = f"/v1/orders/{order['id']}"
+    assert admin_client.get(path, auth=auth).json() == order
+    assert (
+        admin_client.get(path, auth=other_auth).json()
+        == admin_client.get("/v1/orders/order_missing000000", auth=other_auth).json()
+    )
+    assert admin_client.get(path, auth=other_auth).status_code == 400
+    assert admin_client.post("/v1/orders", auth=auth, json=request).status_code == 400
+    assert (
+        admin_client.post("/v1/orders", auth=other_auth, json=request).status_code
+        == 200
+    )
+    with Session(database) as session:
+        stored = session.scalar(select(Order).where(Order.project_id == owner))
+        assert stored is not None and stored.public_id == order["id"]
+        assert stored.amount_due == 5000
+
+
+def test_order_list_filters_and_validation(admin_client: TestClient) -> None:
+    owner = add_project(admin_client, "order-lists")
+    key = issue(admin_client, owner)
+    auth = (key["key_id"], key["secret"])
+    path = "/v1/orders"
+    for receipt in ("cart-01", "cart-02", "other"):
+        response = admin_client.post(
+            path, auth=auth, json={"amount": 100, "currency": "INR", "receipt": receipt}
+        )
+        assert response.status_code == 200, response.text
+        assert response.json()["notes"] == []
+    page = admin_client.get(
+        path,
+        auth=auth,
+        params={"count": 1, "skip": 1, "receipt": "cart", "authorized": 0},
+    )
+    assert page.status_code == 200
+    assert page.json()["entity"] == "collection"
+    assert page.json()["count"] == 1
+    assert page.json()["items"][0]["receipt"] == "cart-01"
+    timestamp = page.json()["items"][0]["created_at"]
+    dated = admin_client.get(
+        path, auth=auth, params={"from": timestamp, "to": timestamp}
+    )
+    assert dated.status_code == 200 and dated.json()["count"] >= 1
+    assert (
+        admin_client.get(path, auth=auth, params={"authorized": 1}).json()["items"]
+        == []
+    )
+    credentials = admin_client.get(path)
+    assert (
+        credentials.status_code == 400 and credentials.json()["error"]["reason"] == "NA"
+    )
+    for request in (
+        {},
+        {"amount": -1, "currency": "INR"},
+        {"amount": 0, "currency": "INR"},
+        {"amount": 100.0, "currency": "INR"},
+        {"amount": "100", "currency": "INR"},
+        {"amount": 100, "currency": "XYZ"},
+        {"amount": 101, "currency": "KWD"},
+        {"amount": 100, "currency": "INR", "receipt": "x" * 41},
+        {"amount": 100, "currency": "INR", "notes": {str(i): "x" for i in range(16)}},
+    ):
+        failure = admin_client.post(path, auth=auth, json=request)
+        assert failure.status_code == 400
+        assert failure.json()["error"]["code"] == "BAD_REQUEST_ERROR"
+    malformed = admin_client.post(
+        path,
+        auth=auth,
+        content="{not-json",
+        headers={"Content-Type": "application/json"},
+    )
+    assert malformed.status_code == 400
+    assert admin_client.get(path, auth=auth, params={"count": 101}).status_code == 400

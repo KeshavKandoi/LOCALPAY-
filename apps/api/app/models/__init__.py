@@ -99,12 +99,23 @@ class ApiCredential(Base, ProjectRecord):
 class Order(Base, ProjectRecord):
     __tablename__ = "orders"
     __table_args__ = (
+        UniqueConstraint("project_id", "public_id"),
+        UniqueConstraint("project_id", "receipt"),
+        CheckConstraint("attempts >= 0", name="attempts"),
         CheckConstraint("amount > 0", name="positive_amount"),
         CheckConstraint("amount_paid BETWEEN 0 AND amount", name="paid_amount"),
         CheckConstraint("currency ~ '^[A-Z]{3}$'", name="currency_format"),
         CheckConstraint("status IN ('created', 'attempted', 'paid')", name="status"),
         Index("ix_orders_project_created_at", "project_id", "created_at"),
     )
+
+    public_id: Mapped[str] = mapped_column(
+        String(20),
+        server_default=text(
+            "'order_' || substr(replace(gen_random_uuid()::text, '-', ''), 1, 14)"
+        ),
+    )
+    attempts: Mapped[int] = mapped_column(server_default="0")
 
     amount: Mapped[int] = mapped_column(BigInteger)
     amount_paid: Mapped[int] = mapped_column(BigInteger, server_default="0")

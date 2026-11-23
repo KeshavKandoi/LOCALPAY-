@@ -13,6 +13,7 @@ from sqlalchemy import Engine, text
 from sqlalchemy.exc import SQLAlchemyError
 from sqlalchemy.orm import sessionmaker
 
+from app.api.orders import orders_router
 from app.api.projects import admin_router, project_router
 from app.core.errors import install_error_handling
 from app.core.logging import configure_logging
@@ -75,6 +76,7 @@ def create_app(settings: Settings | None = None) -> FastAPI:
     install_error_handling(app)
     app.include_router(admin_router)
     app.include_router(project_router)
+    app.include_router(orders_router)
 
     @app.get("/health")
     def health() -> Health:

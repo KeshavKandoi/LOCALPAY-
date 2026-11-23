@@ -2,7 +2,7 @@
 
 Break your payment integration before production does.
 
-LocalPay is a self-hosted development tool for testing payment integrations. The current release provides the infrastructure, project data model, and test credentials for a future Razorpay-compatible simulator. LocalPay is an independent project.
+LocalPay is a self-hosted development tool for testing payment integrations. The current release provides the infrastructure, project data model, and test credentials for a Razorpay-compatible simulator. LocalPay is an independent project.
 
 ## Start the development stack
 
@@ -65,4 +65,8 @@ The credential creation response returns a LocalPay key ID and its secret once. 
 
 Use the issued key ID and secret as the HTTP Basic username and password for `GET /localpay/v1/project`. The credential determines the project returned by that endpoint. LocalPay accepts only credentials issued by this installation. Configure TLS when forwarding the API beyond the local host.
 
-Payment operations and live gateway integration are outside the current release.
+## Create and inspect orders
+
+Use the LocalPay Basic credentials with `POST /v1/orders`, `GET /v1/orders/{order_id}`, or `GET /v1/orders`. Amounts are integers in the requested currency’s smallest unit. Each project has its own receipt namespace. Listing supports `count`, `skip`, `receipt`, `from`, `to`, and `authorized`.
+
+This order API covers the core create, fetch, and list contract. The currency allowlist is fixed for the simulator. Optional Razorpay features such as offer processing, COD, partial-payment configuration, token creation, and related-entity expansion are outside the current scope. LocalPay makes no requests to live gateways.
