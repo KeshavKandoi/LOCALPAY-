@@ -8,6 +8,7 @@ from uuid import UUID, uuid4
 import pytest
 from alembic.config import Config
 from alembic.script import ScriptDirectory
+from cryptography.fernet import Fernet
 from fastapi.testclient import TestClient
 from pydantic import PostgresDsn, SecretStr
 from sqlalchemy import Engine, inspect, select, text
@@ -38,6 +39,7 @@ from app.models import (
 )
 from app.services.credentials import credential_verifier, issue_credential
 from app.services.payments import capture_payment
+from app.services.webhooks import verify_signature
 
 ADMIN_URL = "/localpay/admin/v1/projects"
 PROJECT_URL = "/localpay/v1/project"
@@ -66,6 +68,7 @@ def schema_settings() -> Iterator[Settings]:
             yield Settings(
                 database_url=PostgresDsn(url.render_as_string(hide_password=False)),
                 admin_token=SecretStr(uuid4().hex + uuid4().hex),
+                webhook_encryption_key=SecretStr(Fernet.generate_key().decode()),
             )
         finally:
             with control.begin() as connection:
@@ -782,7 +785,9 @@ def test_partial_and_full_refund_with_idempotency(
         == 400
     )
     with Session(database) as session:
-        events = session.scalars(select(WebhookEvent)).all()
+        events = session.scalars(
+            select(WebhookEvent).where(WebhookEvent.event_type.startswith("refund."))
+        ).all()
         assert len(events) == 6
         assert {event.event_type for event in events} == {
             "refund.created",
@@ -864,3 +869,80 @@ def test_failed_and_uncaptured_payments_cannot_be_refunded(
             ).status_code
             == 400
         )
+
+
+def test_webhook_snapshots_and_signatures_are_immutable_and_scoped(
+    admin_client: TestClient,
+    database: Engine,
+) -> None:
+    project = add_project(admin_client, "webhook-owner")
+    other = add_project(admin_client, "webhook-other")
+    credential = issue(admin_client, project)
+    auth = (credential["key_id"], credential["secret"])
+    secret = uuid4().hex
+    root = f"{ADMIN_URL}/{project}"
+    endpoint = admin_client.post(
+        f"{root}/webhook-endpoints",
+        json={
+            "url": "http://example.test/inbound",
+            "secret": secret,
+            "enabled_events": ["payment.authorized", "payment.captured"],
+        },
+    )
+    assert endpoint.status_code == 201, endpoint.text
+    endpoint_id = endpoint.json()["id"]
+    assert secret not in endpoint.text
+    assert secret not in admin_client.get(f"{root}/webhook-endpoints").text
+    assert (
+        admin_client.post(
+            f"{root}/webhook-endpoints",
+            json={
+                "url": "http://evil.test",
+                "secret": secret,
+                "enabled_events": ["invalid.event"],
+            },
+        ).status_code
+        == 422
+    )
+    captured_payment(admin_client, auth)
+    response = admin_client.get(f"{root}/webhook-events")
+    assert response.status_code == 200
+    events = {entry["event_type"]: entry["id"] for entry in response.json()}
+    assert set(events) == {"payment.authorized", "payment.captured"}
+    for kind, event_id in events.items():
+        path = f"{root}/webhook-events/{event_id}/signed/{endpoint_id}"
+        signed = admin_client.get(path)
+        assert signed.status_code == 200
+        signature = signed.headers["x-razorpay-signature"]
+        assert verify_signature(signed.content, secret.encode(), signature)
+        assert not verify_signature(signed.content + b" ", secret.encode(), signature)
+        assert not verify_signature(signed.content, b"wrong secret", signature)
+        assert signed.json()["event"] == kind
+        assert (
+            signed.json()["payload"]["payment"]["entity"]["status"]
+            == kind.split(".")[1]
+        )
+        assert (
+            signed.content
+            == admin_client.get(f"{root}/webhook-events/{event_id}/payload").content
+        )
+        retry = admin_client.get(path)
+        assert retry.headers["x-razorpay-signature"] == signature
+        assert (
+            retry.headers["x-razorpay-event-id"]
+            == signed.headers["x-razorpay-event-id"]
+        )
+        assert (
+            admin_client.get(
+                f"{ADMIN_URL}/{other}/webhook-events/{event_id}/signed/{endpoint_id}"
+            ).status_code
+            == 404
+        )
+
+    with Session(database) as session:
+        cipher = session.scalar(select(WebhookEndpoint.secret_ciphertext))
+        assert isinstance(cipher, bytes) and secret.encode() not in cipher
+        with pytest.raises(IntegrityError):
+            session.execute(
+                text("UPDATE webhook_events SET payload = decode('00', 'hex')")
+            )

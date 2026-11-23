@@ -5,6 +5,7 @@ from sqlalchemy import select
 from sqlalchemy.orm import Session
 
 from app.models import Order, Payment
+from app.services.webhooks import record_event
 
 
 class Outcome(StrEnum):
@@ -51,6 +52,29 @@ def transition(payment: Payment, target: str) -> None:
     payment.status = target
 
 
+def payment_entity(payment: Payment, order_id: str) -> dict[str, object]:
+    refund_status = None
+    if payment.amount_refunded:
+        refund_status = (
+            "full" if payment.amount_refunded == payment.amount_captured else "partial"
+        )
+    return {
+        "id": payment.public_id,
+        "entity": "payment",
+        "order_id": order_id,
+        "amount": payment.amount,
+        "currency": payment.currency,
+        "method": payment.method,
+        "status": payment.status,
+        "captured": payment.amount_captured > 0,
+        "amount_refunded": payment.amount_refunded,
+        "refund_status": refund_status,
+        "error_code": payment.error_code,
+        "error_description": payment.error_description,
+        "created_at": int(payment.created_at.timestamp()),
+    }
+
+
 def simulate_payment(
     session: Session,
     project_id: UUID,
@@ -86,6 +110,14 @@ def simulate_payment(
     order.status = "attempted"
     session.add(payment)
     session.flush()
+    if payment.status in {"authorized", "failed"}:
+        record_event(
+            session,
+            project_id,
+            f"payment.{payment.status}",
+            payment.created_at,
+            {"payment": payment_entity(payment, order.public_id)},
+        )
     return payment
 
 
@@ -123,4 +155,11 @@ def capture_payment(
     if order.amount_paid == order.amount:
         order.status = "paid"
     session.flush()
+    record_event(
+        session,
+        project_id,
+        "payment.captured",
+        payment.updated_at,
+        {"payment": payment_entity(payment, order.public_id)},
+    )
     return payment, order

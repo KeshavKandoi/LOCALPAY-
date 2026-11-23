@@ -7,8 +7,9 @@ from uuid import UUID
 from sqlalchemy import func, select
 from sqlalchemy.orm import Session
 
-from app.models import Payment, Refund, WebhookEvent
+from app.models import Payment, Refund
 from app.services.payments import fetch_payment, transition
+from app.services.webhooks import record_event
 
 RefundOutcome = Literal["pending", "processed", "failed"]
 
@@ -58,21 +59,12 @@ def refund_entity(refund: Refund, payment_id: str) -> dict[str, object]:
 def add_refund_event(
     session: Session, payment: Payment, refund: Refund, event_type: str
 ) -> None:
-    event = {
-        "entity": "event",
-        "event": event_type,
-        "contains": ["refund"],
-        "payload": {"refund": {"entity": refund_entity(refund, payment.public_id)}},
-        "created_at": int(refund.updated_at.timestamp()),
-    }
-    session.add(
-        WebhookEvent(
-            project_id=refund.project_id,
-            event_type=event_type,
-            payload=json.dumps(
-                event, separators=(",", ":"), ensure_ascii=False
-            ).encode(),
-        )
+    record_event(
+        session,
+        refund.project_id,
+        event_type,
+        refund.updated_at,
+        {"refund": refund_entity(refund, payment.public_id)},
     )
 
 

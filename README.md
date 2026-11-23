@@ -82,3 +82,9 @@ The simulation also supports `payment.failed`, `payment.insufficient_funds`, `pa
 Use `POST /v1/payments/{payment_id}/refund` with an integer `amount` for a partial refund or an empty object for the remaining balance. Normal refunds complete immediately in the simulation. Reuse the documented `X-Refund-Idempotency` header and the same body to retry without another refund. Fetch a refund at `GET /v1/refunds/{refund_id}` or list a payment’s refunds at `GET /v1/payments/{payment_id}/refunds`.
 
 For explicit pending or failed outcomes, use `POST /localpay/v1/simulations/payments/{payment_id}/refunds` with `outcome` and an optional `reason`. Resolve a pending refund at `POST /localpay/v1/simulations/refunds/{refund_id}/resolve` with `{"outcome":"processed"}` or `{"outcome":"failed"}`. Pending refunds reserve the requested balance until resolved. Refund events are recorded in the same transaction as each change.
+
+## Register and inspect webhooks
+
+Set `LOCALPAY_WEBHOOK_ENCRYPTION_KEY` in the ignored `.env` file to a URL-safe base64 encoding of 32 random bytes. You can generate the value with `python3 -c 'import base64,secrets; print(base64.urlsafe_b64encode(secrets.token_bytes(32)).decode())'`. Keep this key stable for the database containing the encrypted webhook secrets.
+
+With the admin token, register an endpoint at `POST /localpay/admin/v1/projects/{project_id}/webhook-endpoints` using `url`, `secret`, and `enabled_events`. Supported events include payment authorization, capture, and failure, plus refund creation, completion, and failure. List events at `GET /localpay/admin/v1/projects/{project_id}/webhook-events` and inspect a signed body at `GET /localpay/admin/v1/projects/{project_id}/webhook-events/{event_id}/signed/{endpoint_id}`. The signature uses HMAC-SHA256 over the stored bytes and the response includes the event ID and signature headers.

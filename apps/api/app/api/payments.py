@@ -13,6 +13,7 @@ from app.services.payments import (
     PaymentError,
     capture_payment,
     fetch_payment,
+    payment_entity,
     simulate_payment,
 )
 
@@ -56,27 +57,7 @@ class PaymentView(BaseModel):
 
     @classmethod
     def from_payment(cls, payment: Payment, order_id: str) -> "PaymentView":
-        refund_status = None
-        if payment.amount_refunded:
-            refund_status = (
-                "full"
-                if payment.amount_refunded == payment.amount_captured
-                else "partial"
-            )
-        return cls(
-            id=payment.public_id,
-            order_id=order_id,
-            amount=payment.amount,
-            currency=payment.currency,
-            status=payment.status,
-            method=payment.method,
-            amount_refunded=payment.amount_refunded,
-            refund_status=refund_status,
-            captured=payment.amount_captured > 0,
-            error_code=payment.error_code,
-            error_description=payment.error_description,
-            created_at=int(payment.created_at.timestamp()),
-        )
+        return cls.model_validate(payment_entity(payment, order_id))
 
 
 @simulation_router.post("/payments", status_code=201)

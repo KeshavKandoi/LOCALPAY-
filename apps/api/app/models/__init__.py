@@ -209,6 +209,9 @@ class WebhookEndpoint(Base, ProjectRecord):
 
     url: Mapped[str] = mapped_column(String(2048))
     enabled: Mapped[bool] = mapped_column(server_default=text("true"))
+    secret_ciphertext: Mapped[bytes | None] = mapped_column(
+        LargeBinary, deferred=True, deferred_raiseload=True
+    )
     secret_reference: Mapped[str | None] = mapped_column(String(120))
     enabled_events: Mapped[list[str]] = mapped_column(
         JSONB, server_default=text("'[]'::jsonb")

@@ -1,6 +1,7 @@
 from functools import lru_cache
 from re import fullmatch
 
+from cryptography.fernet import Fernet
 from pydantic import Field, PostgresDsn, RedisDsn, SecretStr, field_validator
 from pydantic_settings import BaseSettings, SettingsConfigDict
 
@@ -11,6 +12,7 @@ class Settings(BaseSettings):
     database_url: PostgresDsn
     redis_url: RedisDsn
     admin_token: SecretStr | None = None
+    webhook_encryption_key: SecretStr | None = None
     dependency_timeout_seconds: int = Field(default=2, ge=1, le=10)
 
     @field_validator("admin_token", mode="before")
@@ -23,6 +25,20 @@ class Settings(BaseSettings):
             not isinstance(token, str) or fullmatch(r"[0-9a-f]{64}", token) is None
         ):
             raise ValueError("Admin token must be 64 lowercase hexadecimal characters")
+        return value
+
+    @field_validator("webhook_encryption_key", mode="before")
+    @classmethod
+    def validate_webhook_key(cls, value: object) -> object:
+        if value is None or value == "":
+            return None
+        key = value.get_secret_value() if isinstance(value, SecretStr) else value
+        if not isinstance(key, str):
+            raise ValueError("Webhook encryption key is invalid")
+        try:
+            Fernet(key.encode("ascii"))
+        except (ValueError, UnicodeError):
+            raise ValueError("Webhook encryption key is invalid") from None
         return value
 
     @field_validator("database_url")
