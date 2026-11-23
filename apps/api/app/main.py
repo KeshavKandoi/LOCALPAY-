@@ -13,6 +13,7 @@ from sqlalchemy import Engine, text
 from sqlalchemy.exc import SQLAlchemyError
 from sqlalchemy.orm import sessionmaker
 
+from app.api.projects import admin_router, project_router
 from app.core.errors import install_error_handling
 from app.core.logging import configure_logging
 from app.core.settings import Settings, get_settings
@@ -62,6 +63,7 @@ def create_app(settings: Settings | None = None) -> FastAPI:
                 socket_timeout=config.dependency_timeout_seconds,
                 retry=Retry(NoBackoff(), 0),
             ) as redis:
+                app.state.settings = config
                 app.state.engine = engine
                 app.state.sessions = sessionmaker(bind=engine)
                 app.state.redis = redis
@@ -71,6 +73,8 @@ def create_app(settings: Settings | None = None) -> FastAPI:
 
     app = FastAPI(title="LocalPay", lifespan=lifespan)
     install_error_handling(app)
+    app.include_router(admin_router)
+    app.include_router(project_router)
 
     @app.get("/health")
     def health() -> Health:

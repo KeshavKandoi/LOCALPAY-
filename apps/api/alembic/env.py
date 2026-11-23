@@ -1,13 +1,16 @@
-from sqlalchemy import MetaData
-
 from alembic import context
 from app.core.settings import get_settings
 from app.db.session import build_engine
+from app.models import Base
 
-metadata = MetaData()
+metadata = Base.metadata
 settings = get_settings()
 
-if context.is_offline_mode():
+if provided_connection := context.config.attributes.get("connection"):
+    context.configure(connection=provided_connection, target_metadata=metadata)
+    with context.begin_transaction():
+        context.run_migrations()
+elif context.is_offline_mode():
     context.configure(
         url=str(settings.database_url),
         target_metadata=metadata,

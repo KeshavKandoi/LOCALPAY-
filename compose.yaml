@@ -37,6 +37,9 @@ services:
 
   api:
     <<: *app
+    environment:
+      <<: *app-environment
+      LOCALPAY_ADMIN_TOKEN: ${LOCALPAY_ADMIN_TOKEN:-}
     build:
       context: .
       dockerfile: infra/api.Dockerfile

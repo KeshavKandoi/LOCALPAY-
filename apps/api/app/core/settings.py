@@ -1,6 +1,7 @@
 from functools import lru_cache
+from re import fullmatch
 
-from pydantic import Field, PostgresDsn, RedisDsn, field_validator
+from pydantic import Field, PostgresDsn, RedisDsn, SecretStr, field_validator
 from pydantic_settings import BaseSettings, SettingsConfigDict
 
 
@@ -9,7 +10,20 @@ class Settings(BaseSettings):
 
     database_url: PostgresDsn
     redis_url: RedisDsn
+    admin_token: SecretStr | None = None
     dependency_timeout_seconds: int = Field(default=2, ge=1, le=10)
+
+    @field_validator("admin_token", mode="before")
+    @classmethod
+    def validate_admin_token(cls, value: object) -> object:
+        if value == "":
+            return None
+        token = value.get_secret_value() if isinstance(value, SecretStr) else value
+        if token is not None and (
+            not isinstance(token, str) or fullmatch(r"[0-9a-f]{64}", token) is None
+        ):
+            raise ValueError("Admin token must be 64 lowercase hexadecimal characters")
+        return value
 
     @field_validator("database_url")
     @classmethod

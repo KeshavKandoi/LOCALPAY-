@@ -2,6 +2,8 @@ import os
 from uuid import uuid4
 
 import pytest
+from alembic.config import Config
+from alembic.script import ScriptDirectory
 from fastapi.testclient import TestClient
 from pytest import MonkeyPatch
 from redis import Redis
@@ -21,13 +23,18 @@ pytestmark = [
 
 
 def test_postgresql_connection_and_applied_migration() -> None:
+    expected_head = ScriptDirectory.from_config(
+        Config("alembic.ini")
+    ).get_current_head()
+    assert expected_head is not None
     engine = build_engine(Settings())
     try:
         with engine.connect() as connection:
             assert connection.scalar(text("SELECT 1")) == 1
-            assert connection.scalar(
-                text("SELECT version_num FROM alembic_version")
-            ) == ("0001_baseline")
+            assert (
+                connection.scalar(text("SELECT version_num FROM alembic_version"))
+                == expected_head
+            )
     finally:
         engine.dispose()
 
