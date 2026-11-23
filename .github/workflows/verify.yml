@@ -1,0 +1,45 @@
+name: Verify LocalPay
+
+on:
+  pull_request:
+  push:
+  workflow_dispatch:
+
+permissions:
+  contents: read
+
+jobs:
+  verify:
+    runs-on: ubuntu-latest
+    timeout-minutes: 20
+    steps:
+      - uses: actions/checkout@v6
+        with:
+          persist-credentials: false
+      - uses: actions/setup-node@v6
+        with:
+          node-version: "22"
+          cache: npm
+          cache-dependency-path: |
+            apps/dashboard/package-lock.json
+            examples/node-integration/package-lock.json
+      - uses: astral-sh/setup-uv@v7
+      - name: Prepare locked dependencies
+        run: |
+          uv python install 3.13
+          uv sync --locked --project apps/api --python 3.13
+          uv sync --locked --project packages/cli --python 3.13
+          uv sync --locked --project examples/fastapi-integration --python 3.13
+          npm ci --prefix apps/dashboard
+          npm ci --prefix examples/node-integration
+          npm exec --prefix apps/dashboard -- playwright install --with-deps chromium
+      - name: Verify isolated stack
+        run: bash scripts/ci.sh
+      - name: Retain verification reports
+        if: always()
+        uses: actions/upload-artifact@v6
+        with:
+          name: localpay-verification
+          path: .localpay-ci/
+          include-hidden-files: true
+          if-no-files-found: ignore

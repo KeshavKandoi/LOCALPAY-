@@ -54,7 +54,7 @@ def parser() -> argparse.ArgumentParser:
     run.add_argument("--timeout", type=int, default=120)
     report = test.add_parser("report")
     report.add_argument("run_id", type=UUID)
-    report.add_argument("--format", choices=("json", "html"), default="json")
+    report.add_argument("--format", choices=("json", "html", "junit"), default="json")
     report.add_argument("--output", type=Path)
     return root
 
@@ -181,7 +181,8 @@ def test_command(args: argparse.Namespace, client: Client, root: str) -> int:
             print(json.dumps(run))
             return EXIT[run["status"]]
         sleep(0.25)
-    raise CliError(f"Run {run['id']} did not finish before the timeout.")
+    print(json.dumps({"id": run["id"], "status": "blocked", "reason": "timeout"}))
+    return 4
 
 
 def main(argv: list[str] | None = None) -> int:

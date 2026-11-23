@@ -130,3 +130,9 @@ Install the package from the checkout with `uv tool install ./packages/cli`. Fro
 Set `LOCALPAY_PROJECT_ID` or use `--project PROJECT_ID` before an administration subcommand. Use `localpay scenarios list`, `localpay scenarios run payment.concurrent_capture`, `localpay test run --file suite.yaml`, or `localpay test report RUN_ID --format html`. Run a saved webhook scenario with `localpay scenarios run webhook.chaos --scenario-id ID --endpoint-id ID --event-id ID`. Run a saved definition again with `localpay test run --suite-id SUITE_ID`.
 
 The Python, FastAPI, Node.js, and Express sample applications demonstrate checkout simulation, refunds, and verified duplicate-safe webhook handling. See [the integration examples](examples/README.md).
+
+## Run in CI
+
+The GitHub Actions workflow runs `bash scripts/ci.sh` in a disposable Compose project. It starts a real Express receiver, verifies duplicate webhook delivery and the receiver's independent event count, runs both sample apps, and executes the backend and browser regressions. The script removes its isolated database and network on exit.
+
+`localpay test run` prints JSON and exits with 0 for passed, 1 for failed, 2 for error, 3 for inconclusive, and 4 when its wait deadline is blocked. A blocked result includes the run ID for later inspection. Export completed results with `localpay test report RUN_ID --format junit`, `--format json`, or `--format html`. JUnit exports represent inconclusive cases as skipped.

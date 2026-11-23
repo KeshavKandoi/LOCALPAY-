@@ -1,9 +1,11 @@
 import json
+import re
 from collections import Counter
 from html import escape
 from statistics import median
 from typing import Any
 from uuid import UUID
+from xml.etree.ElementTree import Element, SubElement, tostring
 
 from sqlalchemy import cast, func, or_, select
 from sqlalchemy.dialects.postgresql import JSONB
@@ -274,3 +276,59 @@ def render_report(report: JsonObject) -> str:
         f"<p>Run status: {status}</p><table><caption>Test results</caption>{rows}</table>"
         f"{cases}</main></html>"
     )
+
+
+def xml_text(value: str) -> str:
+    return re.sub(
+        r"[^\t\n\r\x20-\ud7ff\ue000-\ufffd\U00010000-\U0010ffff]", "\ufffd", value
+    )
+
+
+def render_junit(run: ReliabilityTestRun) -> str:
+    source = run.result or {}
+    cases = source.get("cases", [])
+    counts = Counter(case.get("status") for case in cases)
+    root = Element(
+        "testsuite",
+        {
+            "name": xml_text(run.suite_name),
+            "tests": str(len(cases) or (1 if run.status == "error" else 0)),
+            "failures": str(counts["failed"]),
+            "errors": str(
+                counts["error"] or (1 if not cases and run.status == "error" else 0)
+            ),
+            "skipped": str(counts["inconclusive"]),
+            "time": f"{(source.get('duration_ms') or 0) / 1000:.3f}",
+        },
+    )
+    for case in cases:
+        step = SubElement(
+            root,
+            "testcase",
+            {
+                "name": xml_text(case["name"]),
+                "classname": xml_text(run.suite_name),
+                "time": f"{(case.get('duration_ms') or 0) / 1000:.3f}",
+            },
+        )
+        if tag := {
+            "failed": "failure",
+            "error": "error",
+            "inconclusive": "skipped",
+        }.get(case["status"]):
+            item = SubElement(step, tag, {"message": case["status"]})
+            item.text = json.dumps(
+                case.get("assertions") or case.get("evidence", {}), ensure_ascii=True
+            )
+    if not cases and run.status == "error":
+        error_case = SubElement(
+            root,
+            "testcase",
+            {"name": "Run execution", "classname": xml_text(run.suite_name)},
+        )
+        SubElement(
+            error_case,
+            "error",
+            {"message": xml_text(str(source.get("error") or "Run failed"))},
+        )
+    return tostring(root, encoding="unicode", xml_declaration=True)

@@ -3,7 +3,7 @@ import { sameOrigin, sessionName, validSession } from "@/lib/session";
 
 const uuid = "[0-9a-f]{8}(?:-[0-9a-f]{4}){3}-[0-9a-f]{12}";
 const projectPaths = new RegExp(
-  "^projects/" + uuid + "/(?:credentials(?:/" + uuid + "(?:/rotate)?)?|dashboard/(?:overview|records/(?:orders|payments|refunds)(?:/(?:order|pay|rfnd)_[a-zA-Z0-9]+)?|events/" + uuid + "/replay)|webhook-(?:endpoints|events(?:/" + uuid + "/payload)?|deliveries(?:/" + uuid + "/attempts)?|scenarios(?:/" + uuid + "/runs)?|runs/" + uuid + "(?:/deliveries)?)|payment-chaos/(?:scenarios|runs(?:/" + uuid + "(?:/cancel)?)?)|test-suites(?:/" + uuid + "/runs)?|test-runs(?:/" + uuid + "(?:/(?:json|report/(?:json|html)))?)?)$"
+  "^projects/" + uuid + "/(?:credentials(?:/" + uuid + "(?:/rotate)?)?|dashboard/(?:overview|records/(?:orders|payments|refunds)(?:/(?:order|pay|rfnd)_[a-zA-Z0-9]+)?|events/" + uuid + "/replay)|webhook-(?:endpoints|events(?:/" + uuid + "/payload)?|deliveries(?:/" + uuid + "/attempts)?|scenarios(?:/" + uuid + "/runs)?|runs/" + uuid + "(?:/deliveries)?)|payment-chaos/(?:scenarios|runs(?:/" + uuid + "(?:/cancel)?)?)|test-suites(?:/" + uuid + "/runs)?|test-runs(?:/" + uuid + "(?:/(?:json|report/(?:json|html|junit)))?)?)$"
 );
 
 async function handle(request: NextRequest, context: { params: Promise<{ segments: string[] }> }) {

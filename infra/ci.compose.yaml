@@ -1,0 +1,16 @@
+services:
+  receiver:
+    image: localpay-ci-receiver:dev
+    build:
+      context: .
+      dockerfile: infra/receiver.Dockerfile
+    environment:
+      LISTEN_HOST: 0.0.0.0
+      PORT: 9001
+      LOCALPAY_RECEIVER_SECRET: ${LOCALPAY_RECEIVER_SECRET:-}
+      LOCALPAY_VERIFICATION_TOKEN: ${LOCALPAY_VERIFICATION_TOKEN:-}
+    healthcheck:
+      test: ["CMD", "node", "-e", "fetch('http://127.0.0.1:9001/health').then(r=>{if(!r.ok)process.exit(1)}).catch(()=>process.exit(1))"]
+      interval: 3s
+      timeout: 3s
+      retries: 12
