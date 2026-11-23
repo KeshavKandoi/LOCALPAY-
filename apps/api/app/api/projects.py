@@ -6,7 +6,7 @@ from fastapi import APIRouter, Depends, HTTPException, Response
 from pydantic import BaseModel, ConfigDict, Field, StringConstraints
 from sqlalchemy.exc import IntegrityError
 
-from app.api.auth import DatabaseSession, require_admin, require_project
+from app.api.auth import DatabaseSession, require_project, require_project_access
 from app.models import Project
 from app.services.credentials import (
     create_project,
@@ -19,7 +19,7 @@ from app.services.credentials import (
 admin_router = APIRouter(
     prefix="/localpay/admin/v1/projects",
     tags=["LocalPay administration"],
-    dependencies=[Depends(require_admin)],
+    dependencies=[Depends(require_project_access)],
 )
 project_router = APIRouter(prefix="/localpay/v1", tags=["LocalPay"])
 ShortName = Annotated[

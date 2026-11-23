@@ -3,14 +3,14 @@ from uuid import UUID
 from fastapi import APIRouter, Depends, HTTPException, Response
 from fastapi.responses import HTMLResponse, JSONResponse
 
-from app.api.auth import DatabaseSession, require_admin
+from app.api.auth import DatabaseSession, require_project_access
 from app.models import ReliabilityTestRun
 from app.services.reports import reliability_report, render_junit, render_report
 
 reports_router = APIRouter(
     prefix="/localpay/admin/v1/projects/{project_id}/test-runs/{run_id}/report",
     tags=["LocalPay reports"],
-    dependencies=[Depends(require_admin)],
+    dependencies=[Depends(require_project_access)],
 )
 
 

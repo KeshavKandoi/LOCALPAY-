@@ -1,4 +1,5 @@
 import os
+import sys
 from collections.abc import Iterator
 from concurrent.futures import ThreadPoolExecutor
 from datetime import UTC, datetime, timedelta
@@ -23,11 +24,13 @@ from sqlalchemy.orm import Session
 from sqlalchemy.schema import CreateSchema, DropSchema
 
 from alembic import command
+from app import account_operator
 from app.api import projects
 from app.core.settings import Settings
 from app.db.session import build_engine
 from app.main import create_app
 from app.models import (
+    AccountSession,
     ApiCredential,
     AuditRecord,
     Base,
@@ -44,6 +47,7 @@ from app.models import (
     WebhookEndpoint,
     WebhookEvent,
 )
+from app.services.accounts import digest
 from app.services.credentials import credential_verifier, issue_credential
 from app.services.delivery import (
     DeliveryClaim,
@@ -1737,3 +1741,55 @@ def test_suite_setup_exception_persists_terminal_error(
     result = admin_client.get(f"{root}/test-runs/{run_id}").json()
     assert result["status"] == "error" and result["finished_at"]
     assert result["result"]["error"] == "ValidationError"
+
+
+def test_account_session_expiration(admin_client: TestClient, database: Engine) -> None:
+    root = "/localpay/account/v1"
+    password = uuid4().hex
+    response = admin_client.post(
+        root + "/signup",
+        json={
+            "username": "test-" + uuid4().hex[:16],
+            "password": password,
+            "confirm_password": password,
+        },
+    )
+    assert response.status_code == 201
+    token = response.json()["token"]
+    headers = {"Authorization": f"Bearer {token}"}
+    assert admin_client.get(root + "/session", headers=headers).status_code == 200
+    with Session(database) as session, session.begin():
+        stored = session.get(AccountSession, digest(token))
+        assert stored is not None
+        stored.expires_at = datetime.now(UTC) - timedelta(seconds=1)
+    assert admin_client.get(root + "/session", headers=headers).status_code == 401
+
+
+def test_operator_claims_existing_project(
+    admin_client: TestClient, schema_settings: Settings, monkeypatch: pytest.MonkeyPatch
+) -> None:
+    project = add_project(admin_client, "legacy-demo-store")
+    credential = issue(admin_client, project)
+    username = "claim-" + uuid4().hex[:16]
+    password = uuid4().hex
+    root = "/localpay/account/v1"
+    registration = admin_client.post(
+        root + "/signup",
+        json={"username": username, "password": password, "confirm_password": password},
+    )
+    assert registration.status_code == 201
+    headers = {"Authorization": "Bearer " + registration.json()["token"]}
+    assert admin_client.get(root + "/projects", headers=headers).json() == []
+    monkeypatch.setattr(account_operator, "get_settings", lambda: schema_settings)
+    monkeypatch.setattr(
+        sys, "argv", ["operator", "claim-project", "legacy-demo-store", username]
+    )
+    account_operator.main()
+    visible = admin_client.get(root + "/projects", headers=headers)
+    assert visible.status_code == 200
+    assert [row["id"] for row in visible.json()] == [str(project)]
+    existing_key = admin_client.get(
+        PROJECT_URL, auth=(credential["key_id"], credential["secret"])
+    )
+    assert existing_key.status_code == 200
+    assert existing_key.json()["id"] == str(project)

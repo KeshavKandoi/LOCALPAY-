@@ -245,6 +245,11 @@ export function SettingsPanel({ root }: { root: string }) {
   return <>
     <div className="two-columns">
       <Panel title="Environment health"><Remote<{ status: string; dependencies: Record<string, string> }> path="ready" poll={5000}>{(readiness) => <div className="selection"><Status value={readiness.status} />{Object.entries(readiness.dependencies).map(([key, value]) => <span key={key}>{key} · {value}</span>)}</div>}</Remote></Panel>
+      <Panel title="Rename project"><ActionForm label="Save project name" execute={async (body) => {
+        await api(root, { method: "PATCH", body: JSON.stringify({ name: body.get("name") }) });
+        await cache.invalidateQueries({ queryKey: ["projects"] });
+        return "Project name updated.";
+      }}><label>New project name<input name="name" required maxLength={120} /></label></ActionForm></Panel>
       <ProjectCreate />
     </div>
     <Panel title="Local API credentials"><ActionForm label="Issue test credential" execute={async (body) => {

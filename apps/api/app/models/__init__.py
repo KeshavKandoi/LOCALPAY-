@@ -48,6 +48,29 @@ class UpdatedAt:
     )
 
 
+class Account(Base):
+    __tablename__ = "accounts"
+    __table_args__ = (
+        CheckConstraint(
+            "username ~ '^[a-z0-9][a-z0-9_-]{2,31}$'", name="username_format"
+        ),
+    )
+
+    id: Mapped[UUID] = mapped_column(primary_key=True, default=uuid4)
+    username: Mapped[str] = mapped_column(String(32), unique=True)
+    password_hash: Mapped[str] = mapped_column(Text)
+
+
+class AccountSession(Base):
+    __tablename__ = "account_sessions"
+
+    token_hash: Mapped[str] = mapped_column(String(64), primary_key=True)
+    account_id: Mapped[UUID] = mapped_column(
+        ForeignKey("accounts.id", ondelete="CASCADE"), index=True
+    )
+    expires_at: Mapped[datetime] = mapped_column(DateTime(timezone=True), index=True)
+
+
 class Project(Base, CreatedAt, UpdatedAt):
     __tablename__ = "projects"
     __table_args__ = (
@@ -57,6 +80,7 @@ class Project(Base, CreatedAt, UpdatedAt):
     )
 
     id: Mapped[UUID] = mapped_column(primary_key=True, default=uuid4)
+    owner_id: Mapped[UUID | None] = mapped_column(ForeignKey("accounts.id"), index=True)
     slug: Mapped[str] = mapped_column(String(63), unique=True)
     name: Mapped[str] = mapped_column(String(120))
     status: Mapped[str] = mapped_column(String(16), server_default="active")

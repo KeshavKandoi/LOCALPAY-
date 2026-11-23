@@ -7,7 +7,7 @@ from pydantic import BaseModel, ConfigDict, Field
 from sqlalchemy import select
 from sqlalchemy.exc import IntegrityError
 
-from app.api.auth import DatabaseSession, require_admin
+from app.api.auth import DatabaseSession, require_project_access
 from app.api.projects import ShortName, get_project
 from app.models import (
     JsonObject,
@@ -22,7 +22,7 @@ from app.services.webhook_chaos import WebhookChaos, enqueue_chaos
 chaos_router = APIRouter(
     prefix="/localpay/admin/v1/projects/{project_id}",
     tags=["LocalPay webhook chaos"],
-    dependencies=[Depends(require_admin)],
+    dependencies=[Depends(require_project_access)],
 )
 
 

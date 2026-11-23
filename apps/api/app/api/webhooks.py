@@ -8,7 +8,7 @@ from pydantic import BaseModel, ConfigDict, Field, HttpUrl, SecretStr, field_val
 from sqlalchemy import select
 from sqlalchemy.exc import IntegrityError
 
-from app.api.auth import DatabaseSession, require_admin
+from app.api.auth import DatabaseSession, require_project_access
 from app.api.projects import get_project
 from app.core.settings import Settings
 from app.models import (
@@ -22,7 +22,7 @@ from app.services.webhooks import fetch_endpoint_secret, protect_secret, signed_
 webhook_router = APIRouter(
     prefix="/localpay/admin/v1/projects/{project_id}",
     tags=["LocalPay webhooks"],
-    dependencies=[Depends(require_admin)],
+    dependencies=[Depends(require_project_access)],
 )
 EventType = Literal[
     "payment.authorized",

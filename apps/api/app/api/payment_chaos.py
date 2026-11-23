@@ -5,7 +5,7 @@ from fastapi import APIRouter, Depends, HTTPException, Query, Request
 from pydantic import BaseModel, ConfigDict, Field
 from sqlalchemy import Engine, select
 
-from app.api.auth import DatabaseSession, require_admin
+from app.api.auth import DatabaseSession, require_project_access
 from app.api.projects import get_project
 from app.api.webhook_chaos import ExecutionView
 from app.models import ScenarioExecution, SimulationScenario
@@ -24,7 +24,7 @@ from app.services.payment_chaos import (
 payment_chaos_router = APIRouter(
     prefix="/localpay/admin/v1/projects/{project_id}/payment-chaos",
     tags=["LocalPay payment chaos"],
-    dependencies=[Depends(require_admin)],
+    dependencies=[Depends(require_project_access)],
 )
 
 

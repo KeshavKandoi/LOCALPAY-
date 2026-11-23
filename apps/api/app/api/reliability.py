@@ -7,7 +7,7 @@ from pydantic import BaseModel, ConfigDict, Field
 from sqlalchemy import select
 from sqlalchemy.exc import IntegrityError
 
-from app.api.auth import DatabaseSession, require_admin
+from app.api.auth import DatabaseSession, require_project_access
 from app.api.projects import get_project
 from app.models import (
     JsonObject,
@@ -21,7 +21,7 @@ from app.services.test_definitions import SuiteDefinition, parse_suite_yaml
 reliability_router = APIRouter(
     prefix="/localpay/admin/v1/projects/{project_id}",
     tags=["LocalPay reliability"],
-    dependencies=[Depends(require_admin)],
+    dependencies=[Depends(require_project_access)],
 )
 
 

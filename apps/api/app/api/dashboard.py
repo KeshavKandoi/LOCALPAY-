@@ -6,7 +6,7 @@ from fastapi import APIRouter, Depends, HTTPException, Query
 from pydantic import BaseModel
 from sqlalchemy import Select, func, or_, select
 
-from app.api.auth import DatabaseSession, require_admin
+from app.api.auth import DatabaseSession, require_project_access
 from app.api.projects import ProjectView
 from app.models import (
     Order,
@@ -25,12 +25,12 @@ from app.services.webhook_chaos import WebhookChaos, enqueue_chaos
 projects_router = APIRouter(
     prefix="/localpay/admin/v1",
     tags=["LocalPay dashboard"],
-    dependencies=[Depends(require_admin)],
+    dependencies=[Depends(require_project_access)],
 )
 dashboard_router = APIRouter(
     prefix="/localpay/admin/v1/projects/{project_id}/dashboard",
     tags=["LocalPay dashboard"],
-    dependencies=[Depends(require_admin)],
+    dependencies=[Depends(require_project_access)],
 )
 Resource = Literal["orders", "payments", "refunds"]
 RESOURCE_MODELS: dict[Resource, type[Order] | type[Payment] | type[Refund]] = {
