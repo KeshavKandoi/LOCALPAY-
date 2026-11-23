@@ -1,0 +1,87 @@
+x-app: &app
+  image: localpay-api:dev
+  pull_policy: never
+  environment: &app-environment
+    LOCALPAY_DATABASE_URL: postgresql+psycopg://localpay:${LOCALPAY_POSTGRES_PASSWORD:?Set LOCALPAY_POSTGRES_PASSWORD in .env}@postgres:5432/localpay
+    LOCALPAY_REDIS_URL: redis://redis:6379/0
+
+services:
+  postgres:
+    image: postgres:18.3-bookworm
+    environment:
+      POSTGRES_USER: localpay
+      POSTGRES_PASSWORD: ${LOCALPAY_POSTGRES_PASSWORD:?Set LOCALPAY_POSTGRES_PASSWORD in .env}
+      POSTGRES_DB: localpay
+    volumes:
+      - pgdata:/var/lib/postgresql
+    healthcheck:
+      test: ["CMD-SHELL", "pg_isready -h 127.0.0.1 -U localpay -d localpay"]
+      interval: 3s
+      timeout: 3s
+      retries: 20
+
+  redis:
+    image: redis:7.4.8-bookworm
+    healthcheck:
+      test: ["CMD", "redis-cli", "ping"]
+      interval: 3s
+      timeout: 3s
+      retries: 20
+
+  migrate:
+    <<: *app
+    command: ["alembic", "upgrade", "head"]
+    depends_on:
+      postgres:
+        condition: service_healthy
+
+  api:
+    <<: *app
+    build:
+      context: .
+      dockerfile: infra/api.Dockerfile
+    ports:
+      - "127.0.0.1:${LOCALPAY_API_PORT:-8000}:8000"
+    depends_on:
+      migrate:
+        condition: service_completed_successfully
+      redis:
+        condition: service_healthy
+    healthcheck:
+      test: ["CMD", "python", "-c", "from urllib.request import urlopen; urlopen('http://127.0.0.1:8000/ready', timeout=5).close()"]
+      interval: 5s
+      timeout: 6s
+      retries: 12
+
+  worker:
+    <<: *app
+    command: ["celery", "-A", "app.workers.celery_app:celery_app", "worker", "--loglevel=INFO", "--concurrency=2"]
+    depends_on:
+      migrate:
+        condition: service_completed_successfully
+      redis:
+        condition: service_healthy
+    healthcheck:
+      test: ["CMD-SHELL", "celery -A app.workers.celery_app:celery_app inspect --timeout=3 --destination=celery@$$HOSTNAME ping"]
+      interval: 10s
+      timeout: 6s
+      retries: 6
+
+  verify:
+    <<: *app
+    profiles: ["test"]
+    image: localpay-api-test:dev
+    build:
+      context: .
+      dockerfile: infra/api.Dockerfile
+      target: test
+    environment:
+      <<: *app-environment
+      LOCALPAY_RUN_INTEGRATION: "1"
+      PYTEST_ADDOPTS: "-p no:cacheprovider"
+    depends_on:
+      worker:
+        condition: service_healthy
+
+volumes:
+  pgdata:
