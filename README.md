@@ -17,7 +17,7 @@ localpay up
 localpay health
 ```
 
-Open `http://127.0.0.1:3000` and sign in with the administration token generated in the ignored `.env` file. Create a project in the dashboard and issue a test credential from Settings. The API is available at `http://127.0.0.1:8000`.
+Open `http://127.0.0.1:3000` and create a username-and-password account. Create a project in the dashboard and issue a test credential from Settings. Existing installations can assign legacy projects through the account operator command. [Account guide](docs/accounts.md) The API is available at `http://127.0.0.1:8000`.
 
 The [installation guide](docs/installation.md) covers local configuration. The [quick start](docs/quick-start.md) walks through a payment and a reliability run.
 

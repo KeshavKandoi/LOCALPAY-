@@ -3,7 +3,7 @@ from collections.abc import AsyncIterator
 from contextlib import asynccontextmanager
 from typing import Literal
 
-from fastapi import FastAPI, Request, Response
+from fastapi import Depends, FastAPI, Request, Response
 from pydantic import BaseModel
 from redis import Redis
 from redis.backoff import NoBackoff
@@ -13,6 +13,8 @@ from sqlalchemy import Engine, text
 from sqlalchemy.exc import SQLAlchemyError
 from sqlalchemy.orm import sessionmaker
 
+from app.api.accounts import router as account_router
+from app.api.auth import account_scope
 from app.api.dashboard import dashboard_router, projects_router
 from app.api.orders import orders_router
 from app.api.payment_chaos import payment_chaos_router
@@ -96,6 +98,19 @@ def create_app(settings: Settings | None = None) -> FastAPI:
     app.include_router(reports_router)
     app.include_router(projects_router)
     app.include_router(dashboard_router)
+    app.include_router(account_router)
+    for router in (
+        admin_router,
+        dashboard_router,
+        webhook_router,
+        chaos_router,
+        payment_chaos_router,
+        reliability_router,
+        reports_router,
+    ):
+        app.include_router(
+            router, prefix="/account", dependencies=[Depends(account_scope)]
+        )
 
     @app.get("/health")
     def health() -> Health:

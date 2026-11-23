@@ -115,7 +115,6 @@ services:
       dockerfile: infra/dashboard.Dockerfile
     environment:
       LOCALPAY_API_URL: http://api:8000
-      LOCALPAY_ADMIN_TOKEN: ${LOCALPAY_ADMIN_TOKEN:-}
       LOCALPAY_DASHBOARD_SECURE_COOKIE: ${LOCALPAY_DASHBOARD_SECURE_COOKIE:-false}
     ports:
       - "127.0.0.1:${LOCALPAY_DASHBOARD_PORT:-3000}:3000"

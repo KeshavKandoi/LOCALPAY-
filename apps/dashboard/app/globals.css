@@ -28,7 +28,7 @@ h1 { font-size: clamp(1.85rem, 3vw, 2.6rem); font-weight: 650; letter-spacing: -
 h2 { font-size: 1.15rem; font-weight: 650; letter-spacing: -.025em; }
 code, pre { font-family: ui-monospace, SFMono-Regular, Consolas, monospace; }
 code { font-size: .85rem; }
-.workspace[data-theme="dark"] {
+[data-theme="dark"] {
   color-scheme: dark;
   --canvas: #111814;
   --surface: #18231c;
@@ -117,6 +117,7 @@ td, th { padding: 12px 17px; border-bottom: 1px solid var(--border); }
 .payload { overflow: auto; max-height: 450px; white-space: pre-wrap; overflow-wrap: anywhere; padding: 14px; margin: 12px 18px; border-radius: 7px; background: var(--subtle); font-size: .82rem; }
 .issued > div { min-width: 0; }
 .issued pre { margin-left: 0; }
+.login { background: var(--canvas); color: var(--ink); }
 .login, .splash { display: grid; place-items: center; min-height: 100dvh; padding: 20px; }
 .login-card { max-width: 430px; width: 100%; padding: 25px; display: grid; gap: 12px; }
 .login h1 { font-size: 1.85rem; margin-top: 14px; }
