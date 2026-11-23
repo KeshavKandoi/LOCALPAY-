@@ -14,7 +14,7 @@ Initialization writes a private ignored `.env`. If you configure the environment
 | Setting | Purpose |
 | --- | --- |
 | `LOCALPAY_POSTGRES_PASSWORD` | Password for the local PostgreSQL database |
-| `LOCALPAY_ADMIN_TOKEN` | A 64-character lowercase hexadecimal administration token |
+| `LOCALPAY_ADMIN_TOKEN` | A 64-character lowercase hexadecimal token for operator APIs and CLI automation |
 | `LOCALPAY_WEBHOOK_ENCRYPTION_KEY` | URL-safe base64 encoding of 32 random bytes |
 | `LOCALPAY_API_PORT`, `LOCALPAY_DASHBOARD_PORT` | Loopback ports, defaulting to 8000 and 3000 |
 | `LOCALPAY_WEBHOOK_TARGETS` | JSON map of approved receiver origins to pinned local IPs |

@@ -4,23 +4,31 @@ import { expect, test, type APIRequestContext, type Page } from "@playwright/tes
 const apiOrigin = process.env.LOCALPAY_E2E_API_URL ?? "http://127.0.0.1:8000";
 const token = process.env.LOCALPAY_E2E_TOKEN;
 
-async function signIn(page: Page) {
-  if (!token) throw new Error("LOCALPAY_E2E_TOKEN is required");
-  await page.goto("/");
-  await page.getByLabel("Administration token").fill(token);
-  await page.getByRole("button", { name: "Sign in" }).click();
+const accountPath = apiOrigin + "/localpay/account/v1";
+
+async function register(request: APIRequestContext) {
+  const username = "qa-" + randomUUID().slice(0, 12);
+  const password = randomUUID();
+  const response = await request.post(accountPath + "/signup", { data: { username, password, confirm_password: password } });
+  expect(response.status()).toBe(201);
+  return { username, password, headers: { authorization: "Bearer " + (await response.json()).token } };
+}
+
+async function signIn(page: Page, account: { username: string; password: string }) {
+  await page.goto("/login");
+  await page.getByLabel("Username", { exact: true }).fill(account.username);
+  await page.getByLabel("Password", { exact: true }).fill(account.password);
+  await page.getByRole("button", { name: "Sign in", exact: true }).click();
   await expect(page.getByRole("navigation", { name: "Dashboard" })).toBeVisible();
 }
 
-async function seed(request: APIRequestContext) {
-  if (!token) throw new Error("LOCALPAY_E2E_TOKEN is required");
-  const admin = { authorization: "Bearer " + token };
+async function seed(request: APIRequestContext, account?: Awaited<ReturnType<typeof register>>) {
+  account ??= await register(request);
   const name = "Dashboard QA " + randomUUID().slice(0, 8);
-  const projects = apiOrigin + "/localpay/admin/v1/projects";
-  const created = await request.post(projects, { headers: admin, data: { name, slug: name.toLowerCase().replaceAll(" ", "-") } });
+  const created = await request.post(accountPath + "/projects", { headers: account.headers, data: { name, slug: name.toLowerCase().replaceAll(" ", "-") } });
   expect(created.status()).toBe(201);
   const project = await created.json();
-  const issued = await request.post(projects + "/" + project.id + "/credentials", { headers: admin, data: { label: "Browser contract" } });
+  const issued = await request.post(apiOrigin + "/account/localpay/admin/v1/projects/" + project.id + "/credentials", { headers: account.headers, data: { label: "Browser contract" } });
   expect(issued.status()).toBe(201);
   const credential = await issued.json();
   const auth = { authorization: "Basic " + Buffer.from(credential.key_id + ":" + credential.secret).toString("base64") };
@@ -34,7 +42,7 @@ async function seed(request: APIRequestContext) {
   expect(capture.status()).toBe(200);
   const refund = await request.post(apiOrigin + "/v1/payments/" + paymentData.id + "/refund", { headers: auth, data: { amount: 300 } });
   expect(refund.status()).toBe(200);
-  return { name, project, credential, order: orderData.id as string, payment: paymentData.id as string, refund: (await refund.json()).id as string };
+  return { name, account, project, credential, order: orderData.id as string, payment: paymentData.id as string, refund: (await refund.json()).id as string };
 }
 
 test("authentication protects the dashboard and mobile views fit", async ({ page, request }) => {
@@ -43,10 +51,11 @@ test("authentication protects the dashboard and mobile views fit", async ({ page
   const sample = await seed(request);
   await page.setViewportSize({ width: 390, height: 844 });
   await page.goto("/");
-  await page.getByLabel("Administration token").fill("invalid");
+  await page.getByLabel("Username", { exact: true }).fill(sample.account.username);
+  await page.getByLabel("Password", { exact: true }).fill("wrong password");
   await page.getByRole("button", { name: "Sign in" }).click();
-  await expect(page.getByRole("alert").filter({ hasText: "Invalid administration token" })).toBeVisible();
-  await signIn(page);
+  await expect(page.getByRole("alert").filter({ hasText: "Incorrect username or password" })).toBeVisible();
+  await signIn(page, sample.account);
   await page.getByRole("combobox", { name: "Project" }).selectOption({ label: sample.name });
   await expect(page.getByRole("heading", { name: "Payment activity" })).toBeVisible();
   await expect(page.getByText("INR 9.00")).toBeVisible();
@@ -60,7 +69,7 @@ test("authentication protects the dashboard and mobile views fit", async ({ page
 
 test("real records, filters, detail, and upstream error state", async ({ page, request }) => {
   const sample = await seed(request);
-  await signIn(page);
+  await signIn(page, sample.account);
   await page.getByRole("combobox", { name: "Project" }).selectOption({ label: sample.name });
   await page.getByRole("link", { name: "Orders" }).click();
   await page.getByRole("textbox", { name: "Search records" }).fill("browser-order");
@@ -79,9 +88,9 @@ test("real records, filters, detail, and upstream error state", async ({ page, r
 
 test("webhook replay, payment chaos, reliability execution, and export", async ({ page, request }) => {
   const sample = await seed(request);
-  await signIn(page);
+  await signIn(page, sample.account);
   await page.getByRole("combobox", { name: "Project" }).selectOption({ label: sample.name });
-  await page.getByRole("link", { name: "Settings" }).click();
+  await page.getByRole("link", { name: "Settings", exact: true }).click();
   await page.getByLabel("Receiver URL").fill("http://receiver.example.test/payments");
   const webhookSecret = randomUUID();
   await page.getByLabel("Webhook secret").fill(webhookSecret);
@@ -124,15 +133,24 @@ test("webhook replay, payment chaos, reliability execution, and export", async (
 });
 
 test("dashboard authentication caps request size and rejects cross-origin login", async ({ request, baseURL }) => {
-  if (!token || !baseURL) throw new Error("Dashboard test environment is required");
+  if (!baseURL) throw new Error("Dashboard test environment is required");
   const origin = new URL(baseURL).origin;
-  const csrf = await request.post("/api/session", { headers: { origin: "http://127.0.0.1:1" }, data: { token } });
+  const account = await register(request);
+  const csrf = await request.post("/api/session", { headers: { origin: "http://127.0.0.1:1" }, data: account });
   expect(csrf.status()).toBe(403);
-  const oversized = await request.post("/api/session", { headers: { origin }, data: { token: "x".repeat(1100) } });
+  const oversized = await request.post("/api/session", { headers: { origin }, data: { password: "x".repeat(4200) } });
   expect(oversized.status()).toBe(413);
+  const valid = await request.post("/api/session", { headers: { origin }, data: { username: account.username, password: account.password } });
+  expect(valid.status()).toBe(200);
+  expect(valid.headers()["set-cookie"]).toContain("HttpOnly");
+  expect(valid.headers()["set-cookie"]).toContain("SameSite=strict");
+  expect(await valid.json()).toEqual({ authenticated: true, username: account.username });
+  const forbidden = await request.delete("/api/session", { headers: { origin: "http://127.0.0.1:1" } });
+  expect(forbidden.status()).toBe(403);
+  const username = "absent-" + randomUUID().slice(0, 10);
   let throttled = false;
-  for (let attempt = 0; attempt < 21; attempt++) {
-    const denied = await request.post("/api/session", { headers: { origin }, data: { token: "invalid" } });
+  for (let attempt = 0; attempt < 20; attempt++) {
+    const denied = await request.post("/api/session", { headers: { origin }, data: { username, password: "invalid" } });
     if (denied.status() === 429) {
       expect(Number(denied.headers()["retry-after"])).toBeGreaterThan(0);
       throttled = true;
@@ -141,18 +159,14 @@ test("dashboard authentication caps request size and rejects cross-origin login"
     expect(denied.status()).toBe(401);
   }
   expect(throttled).toBe(true);
-  const valid = await request.post("/api/session", { headers: { origin }, data: { token } });
-  expect(valid.status()).toBe(200);
-  expect(valid.headers()["set-cookie"]).toContain("HttpOnly");
-  expect(valid.headers()["set-cookie"]).not.toContain(token);
 });
 
 test("API Workspace sends real requests and isolates selected projects", async ({ page, request }) => {
   const unauthorized = await request.get("/api/workspace/health");
   expect(unauthorized.status()).toBe(401);
   const sample = await seed(request);
-  const other = await seed(request);
-  await signIn(page);
+  const other = await seed(request, sample.account);
+  await signIn(page, sample.account);
   await page.getByRole("combobox", { name: "Project" }).selectOption({ label: sample.name });
   await page.getByRole("link", { name: "API Workspace" }).click();
   await page.getByRole("button", { name: "Environment", exact: true }).click();
@@ -199,7 +213,7 @@ test("API Workspace sends real requests and isolates selected projects", async (
 
 test("Payment Simulator runs the order, authorization, capture, and refund lifecycle", async ({ page, request }) => {
   const sample = await seed(request);
-  await signIn(page);
+  await signIn(page, sample.account);
   await page.getByRole("combobox", { name: "Project" }).selectOption({ label: sample.name });
   await page.getByRole("link", { name: "Payment Simulator" }).click();
   await page.getByLabel("Key ID", { exact: true }).fill(sample.credential.key_id);
@@ -223,7 +237,7 @@ test("Payment Simulator runs the order, authorization, capture, and refund lifec
 
 test("API Workspace imports LocalPay paths from OpenAPI, Postman, and cURL", async ({ page, request }) => {
   const sample = await seed(request);
-  await signIn(page);
+  await signIn(page, sample.account);
   await page.getByRole("combobox", { name: "Project" }).selectOption({ label: sample.name });
   await page.getByRole("link", { name: "API Workspace" }).click();
   await page.getByRole("button", { name: "Collections", exact: true }).click();
@@ -273,7 +287,7 @@ test("suite validation is non-mutating and payment runs are project scoped", asy
 
 test("external workspace traffic goes directly from the browser without project credentials", async ({ page, request }) => {
   const sample = await seed(request);
-  await signIn(page);
+  await signIn(page, sample.account);
   await page.getByRole("combobox", { name: "Project" }).selectOption({ label: sample.name });
   await page.getByRole("link", { name: "API Workspace" }).click();
   await page.getByLabel("Key ID", { exact: true }).fill(sample.credential.key_id);
@@ -293,4 +307,48 @@ test("external workspace traffic goes directly from the browser without project 
   await page.getByLabel("Request URL").fill(external);
   await page.getByRole("button", { name: "Send request" }).click();
   await expect(page.getByRole("region", { name: "Response viewer" }).locator("pre")).toContainText('"external": true');
+});
+
+test("signup, password change and project isolation across accounts", async ({ page, request }) => {
+  const username = "signup-" + randomUUID().slice(0, 8);
+  const password = randomUUID();
+  const newPassword = randomUUID();
+  await page.goto("/signup");
+  await page.getByLabel("Username", { exact: true }).fill(username);
+  await page.getByLabel("Password", { exact: true }).fill(password);
+  await page.getByLabel("Confirm password", { exact: true }).fill(password);
+  await page.getByRole("button", { name: "Sign up", exact: true }).click();
+  await expect(page.getByRole("heading", { name: "Create project" })).toBeVisible();
+  await page.getByLabel("Project name", { exact: true }).fill("Owner workspace");
+  await page.getByLabel("Project slug", { exact: true }).fill(username);
+  await page.getByRole("button", { name: "Create project", exact: true }).click();
+  await page.getByRole("combobox", { name: "Project" }).selectOption({ label: "Owner workspace" });
+  await page.getByRole("link", { name: "Settings", exact: true }).click();
+  await page.getByLabel("New project name", { exact: true }).fill("Renamed owner workspace");
+  await page.getByRole("button", { name: "Save project name" }).click();
+  await expect(page.getByText("Project name updated.")).toBeVisible();
+  const duplicate = await request.post(accountPath + "/signup", { data: { username: username.toUpperCase(), password, confirm_password: password } });
+  expect(duplicate.status()).toBe(409);
+  const login = await request.post(accountPath + "/login", { data: { username, password } });
+  expect(login.status()).toBe(200);
+  const headers = { authorization: "Bearer " + (await login.json()).token };
+  const foreign = await seed(request);
+  const target = "projects/" + foreign.project.id;
+  const privateRoutes = ["/dashboard/overview", "/dashboard/records/orders", "/dashboard/records/refunds", "/webhook-events", "/payment-chaos/runs", "/test-runs"];
+  for (const suffix of privateRoutes) {
+    const denied = await page.request.get("/api/backend/" + target + suffix);
+    expect(denied.status()).toBe(404);
+  }
+  expect((await request.get(apiOrigin + "/localpay/admin/v1/projects", { headers })).status()).toBe(401);
+  await page.getByRole("link", { name: "Account Settings" }).click();
+  await page.getByLabel("Current password", { exact: true }).fill(password);
+  await page.getByLabel("New password", { exact: true }).fill(newPassword);
+  await page.getByLabel("Confirm new password", { exact: true }).fill(newPassword);
+  await page.getByRole("button", { name: "Change password", exact: true }).click();
+  await expect(page.getByText("Password updated. Other sessions were signed out.")).toBeVisible();
+  expect((await request.get(accountPath + "/session", { headers })).status()).toBe(401);
+  expect((await request.post(accountPath + "/login", { data: { username, password } })).status()).toBe(401);
+  await page.getByRole("button", { name: "Sign out of this session" }).click();
+  await expect(page.getByRole("heading", { name: "Sign in to LocalPay" })).toBeVisible();
+  await signIn(page, { username, password: newPassword });
 });
