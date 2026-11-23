@@ -14,6 +14,7 @@ class Settings(BaseSettings):
     database_url: PostgresDsn
     redis_url: RedisDsn
     admin_token: SecretStr | None = None
+    verification_token: SecretStr | None = None
     webhook_encryption_key: SecretStr | None = None
     celery_queue: str = Field(default="celery", pattern=r"^[a-zA-Z0-9_-]{1,96}$")
     webhook_targets: dict[str, str] = Field(default_factory=dict)

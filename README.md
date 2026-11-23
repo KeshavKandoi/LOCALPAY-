@@ -106,3 +106,9 @@ Runs can schedule delays and bursts, send duplicate events with stable IDs, reve
 List payment scenarios under the project's `/payment-chaos/scenarios` admin route. Start a run with `POST /localpay/admin/v1/projects/{project_id}/payment-chaos/runs`, passing a scenario `type`. Transaction scenarios create their own orders and retain the resulting records for inspection. The run records the actual capture and refund outcomes and the balance left after a simulated interruption.
 
 Outage and rate-limit scenarios affect only the project's next configured number of authenticated gateway requests. Their run record shows the status codes returned. Cancel an active gateway fault at `/payment-chaos/runs/{execution_id}/cancel`. Use `X-LocalPay-Idempotency-Key` on payment simulation requests to replay the same operation.
+
+## Execute reliability suites
+
+Create a suite at `POST /localpay/admin/v1/projects/{project_id}/test-suites` with a JSON definition or `{"yaml":"<suite contents>"}`. Each named case selects a payment or webhook scenario and one or more assertions. Start a run under `/test-suites/{suite_id}/runs`, then read `/test-runs/{run_id}` or download `/test-runs/{run_id}/json`. The scheduler dispatches runs to a dedicated worker queue so webhook delivery can continue while tests wait for evidence.
+
+For business-state assertions, set the suite's `verification_url` to an allowlisted, test-only receiver and set `LOCALPAY_VERIFICATION_TOKEN` on the worker. Its protected GET endpoint receives `run_id`, `case`, and available order or scenario IDs. Return values such as `{"application_event_count":1}` based on observed application state. Missing or invalid evidence produces an inconclusive assertion.

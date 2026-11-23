@@ -52,6 +52,7 @@ from app.services.delivery import (
     finish_delivery,
 )
 from app.services.payments import capture_payment
+from app.services.reliability import collect_runs, run_suite
 from app.services.webhooks import verify_signature
 
 ADMIN_URL = "/localpay/admin/v1/projects"
@@ -1418,3 +1419,115 @@ def test_gateway_faults_are_bounded_cancelable_and_scoped(
         admin_client.get(f"{root}/runs/{second['id']}").json()["status"] == "cancelled"
     )
     assert admin_client.get("/v1/orders", auth=auth).status_code == 200
+
+
+@pytest.mark.parametrize(
+    ("expected", "status"),
+    [
+        ({"type": "amount_paid", "expected": 600}, "passed"),
+        ({"type": "amount_paid", "expected": 123}, "failed"),
+        ({"type": "application_event_count", "expected": 1}, "inconclusive"),
+    ],
+)
+def test_reliability_results_are_durable_and_scoped(
+    admin_client: TestClient,
+    schema_settings: Settings,
+    database: Engine,
+    expected: dict[str, object],
+    status: str,
+) -> None:
+    owner = add_project(admin_client, "suite-owner")
+    outsider = add_project(admin_client, "suite-outsider")
+    root = f"{ADMIN_URL}/{owner}"
+    body = {
+        "name": "capture suite",
+        "tests": [
+            {
+                "name": "atomic capture",
+                "scenario": "payment.concurrent_capture",
+                "assertions": [expected],
+            },
+        ],
+    }
+    response = admin_client.post(f"{root}/test-suites", json=body)
+    assert response.status_code == 201, response.text
+    suite_id = response.json()["id"]
+    assert (
+        admin_client.post(
+            f"{ADMIN_URL}/{outsider}/test-suites/{suite_id}/runs",
+        ).status_code
+        == 404
+    )
+    stopped = admin_client.post(f"{root}/test-suites/{suite_id}/runs")
+    assert stopped.status_code == 202 and stopped.json()["status"] == "pending"
+    run_id = UUID(stopped.json()["id"])
+    assert collect_runs(database) == [(owner, run_id)]
+    run_suite(database, schema_settings, owner, run_id)
+    path = f"{root}/test-runs/{run_id}"
+    completed = admin_client.get(path).json()
+    assert completed["status"] == status
+    assert completed["started_at"] and completed["finished_at"]
+    first_case = completed["result"]["cases"][0]
+    assert first_case["assertions"][0]["status"] == status
+    assert admin_client.get(f"{path}/json").json() == completed
+    assert (
+        admin_client.get(f"{ADMIN_URL}/{outsider}/test-runs/{run_id}").status_code
+        == 404
+    )
+    run_suite(database, schema_settings, owner, run_id)
+    assert admin_client.get(path).json() == completed
+    rerun = admin_client.post(f"{root}/test-suites/{suite_id}/runs").json()
+    run_suite(database, schema_settings, owner, UUID(rerun["id"]))
+    new_case = admin_client.get(f"{root}/test-runs/{rerun['id']}").json()["result"][
+        "cases"
+    ][0]
+    assert new_case["assertions"] == first_case["assertions"]
+
+
+def test_reliability_webhook_setup_errors_are_recorded(
+    admin_client: TestClient,
+    schema_settings: Settings,
+    database: Engine,
+) -> None:
+    project = add_project(admin_client, "suite-error")
+    credential = issue(admin_client, project)
+    auth = (credential["key_id"], credential["secret"])
+    captured_payment(admin_client, auth)
+    root = f"{ADMIN_URL}/{project}"
+    endpoint = admin_client.post(
+        f"{root}/webhook-endpoints",
+        json={
+            "url": "http://example.test",
+            "secret": uuid4().hex,
+            "enabled_events": ["payment.captured"],
+            "enabled": False,
+        },
+    ).json()
+    event = next(
+        row
+        for row in admin_client.get(f"{root}/webhook-events").json()
+        if row["event_type"] == "payment.captured"
+    )
+    suite = admin_client.post(
+        f"{root}/test-suites",
+        json={
+            "name": "disabled receiver",
+            "tests": [
+                {
+                    "name": "duplicates",
+                    "scenario": "webhook.duplicate",
+                    "endpoint_id": endpoint["id"],
+                    "event_ids": [event["id"]],
+                    "assertions": [{"type": "delivery_count", "expected": 2}],
+                }
+            ],
+        },
+    )
+    assert suite.status_code == 201
+    run_id = UUID(
+        admin_client.post(f"{root}/test-suites/{suite.json()['id']}/runs").json()["id"]
+    )
+    run_suite(database, schema_settings, project, run_id)
+    result = admin_client.get(f"{root}/test-runs/{run_id}").json()
+    assert result["status"] == "error"
+    assert result["result"]["cases"][0]["evidence"]["error_type"] == "LookupError"

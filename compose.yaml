@@ -4,7 +4,9 @@ x-app: &app
   environment: &app-environment
     LOCALPAY_DATABASE_URL: postgresql+psycopg://localpay:${LOCALPAY_POSTGRES_PASSWORD:?Set LOCALPAY_POSTGRES_PASSWORD in .env}@postgres:5432/localpay
     LOCALPAY_REDIS_URL: redis://redis:6379/0
+    LOCALPAY_CELERY_QUEUE: ${LOCALPAY_CELERY_QUEUE:-celery}
     LOCALPAY_WEBHOOK_ENCRYPTION_KEY: ${LOCALPAY_WEBHOOK_ENCRYPTION_KEY:-}
+    LOCALPAY_VERIFICATION_TOKEN: ${LOCALPAY_VERIFICATION_TOKEN:-}
     LOCALPAY_WEBHOOK_TARGETS: ${LOCALPAY_WEBHOOK_TARGETS:-}
 
 services:
@@ -68,6 +70,20 @@ services:
         condition: service_healthy
     healthcheck:
       test: ["CMD-SHELL", "celery -A app.workers.celery_app:celery_app inspect --timeout=3 --destination=celery@$$HOSTNAME ping"]
+      interval: 10s
+      timeout: 6s
+      retries: 6
+
+  reliability-worker:
+    <<: *app
+    command: ["celery", "-A", "app.workers.celery_app:celery_app", "worker", "--loglevel=INFO", "--concurrency=1", "--queues=${LOCALPAY_CELERY_QUEUE:-celery}.reliability", "--hostname=reliability@%h"]
+    depends_on:
+      migrate:
+        condition: service_completed_successfully
+      redis:
+        condition: service_healthy
+    healthcheck:
+      test: ["CMD-SHELL", "celery -A app.workers.celery_app:celery_app inspect --timeout=3 --destination=reliability@$$HOSTNAME ping"]
       interval: 10s
       timeout: 6s
       retries: 6

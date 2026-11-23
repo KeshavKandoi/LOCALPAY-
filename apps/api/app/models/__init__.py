@@ -341,9 +341,22 @@ class SimulationScenario(Base, ProjectRecord):
     )
 
 
+class ReliabilitySuite(Base, ProjectRecord):
+    __tablename__ = "reliability_suites"
+    __table_args__ = (UniqueConstraint("project_id", "name"),)
+
+    name: Mapped[str] = mapped_column(String(120))
+    definition: Mapped[JsonObject] = mapped_column(JSONB)
+
+
 class ReliabilityTestRun(Base, ProjectRecord):
     __tablename__ = "reliability_test_runs"
     __table_args__ = (
+        ForeignKeyConstraint(
+            ["project_id", "suite_id"],
+            ["reliability_suites.project_id", "reliability_suites.id"],
+        ),
+        Index("ix_reliability_runs_status_created_at", "status", "created_at"),
         Index("ix_reliability_runs_project_created_at", "project_id", "created_at"),
         CheckConstraint(
             "status IN ('pending', 'running', 'passed', 'failed', 'error', 'inconclusive')",
@@ -351,6 +364,7 @@ class ReliabilityTestRun(Base, ProjectRecord):
         ),
     )
 
+    suite_id: Mapped[UUID | None] = mapped_column()
     suite_name: Mapped[str] = mapped_column(String(120))
     status: Mapped[str] = mapped_column(String(16), server_default="pending")
     started_at: Mapped[datetime | None] = mapped_column(DateTime(timezone=True))
