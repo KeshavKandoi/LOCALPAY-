@@ -76,3 +76,9 @@ This order API covers the core create, fetch, and list contract. The currency al
 Send `POST /localpay/v1/simulations/payments` with a LocalPay Basic credential and a body such as `{"order_id":"order_…","scenario":"payment.success","method":"upi"}`. Fetch the result with `GET /v1/payments/{payment_id}`. Capture an authorized payment through `POST /v1/payments/{payment_id}/capture` with the authorized amount and matching currency.
 
 The simulation also supports `payment.failed`, `payment.insufficient_funds`, `payment.authorization_failed`, `payment.capture_failed`, `payment.timeout`, and `payment.network_interruption`. The last two leave a persisted payment in `created` and return a synthetic HTTP 504 or 503. Capturing a payment updates its order in the same transaction. The API covers the core payment fields and simulates full capture of the authorized amount.
+
+## Simulate refunds
+
+Use `POST /v1/payments/{payment_id}/refund` with an integer `amount` for a partial refund or an empty object for the remaining balance. Normal refunds complete immediately in the simulation. Reuse the documented `X-Refund-Idempotency` header and the same body to retry without another refund. Fetch a refund at `GET /v1/refunds/{refund_id}` or list a payment’s refunds at `GET /v1/payments/{payment_id}/refunds`.
+
+For explicit pending or failed outcomes, use `POST /localpay/v1/simulations/payments/{payment_id}/refunds` with `outcome` and an optional `reason`. Resolve a pending refund at `POST /localpay/v1/simulations/refunds/{refund_id}/resolve` with `{"outcome":"processed"}` or `{"outcome":"failed"}`. Pending refunds reserve the requested balance until resolved. Refund events are recorded in the same transaction as each change.

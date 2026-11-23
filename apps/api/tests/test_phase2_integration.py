@@ -707,3 +707,160 @@ def test_concurrent_captures_cannot_overpay_order(
         assert sorted(executor.map(capture_one, payment_ids)) == [200, 400]
     record = admin_client.get(f"/v1/orders/{order['id']}", auth=auth).json()
     assert record["amount_paid"] == 600 and record["amount_due"] == 0
+
+
+def captured_payment(
+    client: TestClient, auth: tuple[str, str], amount: int = 600
+) -> str:
+    order = client.post(
+        "/v1/orders", auth=auth, json={"amount": amount, "currency": "INR"}
+    ).json()
+    payment = client.post(
+        "/localpay/v1/simulations/payments",
+        auth=auth,
+        json={"order_id": order["id"]},
+    ).json()
+    response = client.post(
+        f"/v1/payments/{payment['id']}/capture",
+        auth=auth,
+        json={"amount": amount, "currency": "INR"},
+    )
+    assert response.status_code == 200, response.text
+    payment_id: str = payment["id"]
+    return payment_id
+
+
+def test_partial_and_full_refund_with_idempotency(
+    admin_client: TestClient, database: Engine
+) -> None:
+    key = issue(admin_client, add_project(admin_client, "refund-contract"))
+    auth = (key["key_id"], key["secret"])
+    payment_id = captured_payment(admin_client, auth)
+    path = f"/v1/payments/{payment_id}"
+    header = {"X-Refund-Idempotency": "unique-refund-1"}
+    first = admin_client.post(
+        f"{path}/refund", auth=auth, json={"amount": 200}, headers=header
+    )
+    assert first.status_code == 200, first.text
+    refund = first.json()
+    assert refund["status"] == "processed" and refund["amount"] == 200
+    assert (
+        admin_client.post(
+            f"{path}/refund", auth=auth, json={"amount": 200}, headers=header
+        ).json()
+        == refund
+    )
+    assert (
+        admin_client.post(
+            f"{path}/refund", auth=auth, json={"amount": 201}, headers=header
+        ).status_code
+        == 409
+    )
+    assert (
+        admin_client.get(f"{path}/refunds/{refund['id']}", auth=auth).json() == refund
+    )
+    assert admin_client.get(f"/v1/refunds/{refund['id']}", auth=auth).json() == refund
+    assert admin_client.get(path, auth=auth).json()["refund_status"] == "partial"
+    assert (
+        admin_client.post(f"{path}/refund", auth=auth, json={"amount": 401}).status_code
+        == 400
+    )
+    assert (
+        admin_client.post(f"{path}/refund", auth=auth, json={"amount": 100}).status_code
+        == 200
+    )
+    final = admin_client.post(f"{path}/refund", auth=auth, json={})
+    assert final.status_code == 200 and final.json()["amount"] == 300
+    assert admin_client.post(f"{path}/refund", auth=auth, json={}).status_code == 400
+    assert admin_client.get(path, auth=auth).json()["status"] == "refunded"
+    assert admin_client.get(f"{path}/refunds", auth=auth).json()["count"] == 3
+    outsider = issue(admin_client, add_project(admin_client, "refund-outsider"))
+    assert (
+        admin_client.get(
+            f"/v1/refunds/{refund['id']}", auth=(outsider["key_id"], outsider["secret"])
+        ).status_code
+        == 400
+    )
+    with Session(database) as session:
+        events = session.scalars(select(WebhookEvent)).all()
+        assert len(events) == 6
+        assert {event.event_type for event in events} == {
+            "refund.created",
+            "refund.processed",
+        }
+
+
+def test_pending_refund_releases_balance_when_failed(admin_client: TestClient) -> None:
+    key = issue(admin_client, add_project(admin_client, "refund-reservation"))
+    auth = (key["key_id"], key["secret"])
+    payment_id = captured_payment(admin_client, auth)
+    path = f"/v1/payments/{payment_id}"
+    pending = admin_client.post(
+        f"/localpay/v1/simulations/payments/{payment_id}/refunds",
+        auth=auth,
+        json={"amount": 500, "reason": "Simulation"},
+    )
+    assert pending.status_code == 201, pending.text
+    refund = pending.json()
+    assert refund["status"] == "pending"
+    assert (
+        admin_client.post(f"{path}/refund", auth=auth, json={"amount": 101}).status_code
+        == 400
+    )
+    resolve = f"/localpay/v1/simulations/refunds/{refund['id']}/resolve"
+    assert (
+        admin_client.post(resolve, auth=auth, json={"outcome": "failed"}).json()[
+            "status"
+        ]
+        == "failed"
+    )
+    assert (
+        admin_client.post(resolve, auth=auth, json={"outcome": "processed"}).status_code
+        == 409
+    )
+    assert (
+        admin_client.post(f"{path}/refund", auth=auth, json={}).json()["amount"] == 600
+    )
+
+
+def test_concurrent_refunds_cannot_exceed_capture(
+    admin_client: TestClient, schema_settings: Settings
+) -> None:
+    key = issue(admin_client, add_project(admin_client, "concurrent-refund"))
+    auth = (key["key_id"], key["secret"])
+    payment_id = captured_payment(admin_client, auth)
+    path = f"/v1/payments/{payment_id}"
+    barrier = Barrier(2)
+
+    def refund_one(amount: int) -> int:
+        with TestClient(create_app(schema_settings)) as client:
+            barrier.wait(timeout=10)
+            return client.post(
+                f"{path}/refund", auth=auth, json={"amount": amount}
+            ).status_code
+
+    with ThreadPoolExecutor(max_workers=2) as executor:
+        assert sorted(executor.map(refund_one, [500, 500])) == [200, 400]
+    assert admin_client.get(path, auth=auth).json()["amount_refunded"] == 500
+
+
+def test_failed_and_uncaptured_payments_cannot_be_refunded(
+    admin_client: TestClient,
+) -> None:
+    key = issue(admin_client, add_project(admin_client, "refund-ineligible"))
+    auth = (key["key_id"], key["secret"])
+    order = admin_client.post(
+        "/v1/orders", auth=auth, json={"amount": 600, "currency": "INR"}
+    ).json()
+    for scenario in ("payment.failed", "payment.success"):
+        payment = admin_client.post(
+            "/localpay/v1/simulations/payments",
+            auth=auth,
+            json={"order_id": order["id"], "scenario": scenario},
+        ).json()
+        assert (
+            admin_client.post(
+                f"/v1/payments/{payment['id']}/refund", auth=auth, json={}
+            ).status_code
+            == 400
+        )

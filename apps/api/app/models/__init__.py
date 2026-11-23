@@ -174,6 +174,9 @@ class Payment(Base, ProjectRecord, UpdatedAt):
 class Refund(Base, ProjectRecord, UpdatedAt):
     __tablename__ = "refunds"
     __table_args__ = (
+        UniqueConstraint("project_id", "public_id"),
+        UniqueConstraint("project_id", "payment_id", "receipt"),
+        UniqueConstraint("project_id", "idempotency_key"),
         ForeignKeyConstraint(
             ["project_id", "payment_id"], ["payments.project_id", "payments.id"]
         ),
@@ -183,6 +186,16 @@ class Refund(Base, ProjectRecord, UpdatedAt):
         Index("ix_refunds_project_payment", "project_id", "payment_id"),
     )
 
+    public_id: Mapped[str] = mapped_column(
+        String(19),
+        server_default=text(
+            "'rfnd_' || substr(replace(gen_random_uuid()::text, '-', ''), 1, 14)"
+        ),
+    )
+    receipt: Mapped[str | None] = mapped_column(String(40))
+    notes: Mapped[JsonObject] = mapped_column(JSONB, server_default=text("'{}'::jsonb"))
+    idempotency_key: Mapped[str | None] = mapped_column(String(128))
+    request_fingerprint: Mapped[str | None] = mapped_column(String(64))
     payment_id: Mapped[UUID] = mapped_column()
     amount: Mapped[int] = mapped_column(BigInteger)
     currency: Mapped[str] = mapped_column(String(3))

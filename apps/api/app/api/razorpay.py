@@ -27,7 +27,9 @@ class RazorpayError(Exception):
         }
         if self.field is not None:
             error["field"] = self.field
-        return JSONResponse({"error": error}, status_code=400)
+        return JSONResponse(
+            {"error": error}, status_code=400 if authentication else self.status
+        )
 
 
 class RazorpayRoute(APIRoute):

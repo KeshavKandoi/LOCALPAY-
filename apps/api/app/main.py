@@ -16,6 +16,7 @@ from sqlalchemy.orm import sessionmaker
 from app.api.orders import orders_router
 from app.api.payments import payments_router, simulation_router
 from app.api.projects import admin_router, project_router
+from app.api.refunds import refund_router, refund_simulation_router
 from app.core.errors import install_error_handling
 from app.core.logging import configure_logging
 from app.core.settings import Settings, get_settings
@@ -80,6 +81,8 @@ def create_app(settings: Settings | None = None) -> FastAPI:
     app.include_router(orders_router)
     app.include_router(payments_router)
     app.include_router(simulation_router)
+    app.include_router(refund_router)
+    app.include_router(refund_simulation_router)
 
     @app.get("/health")
     def health() -> Health:
