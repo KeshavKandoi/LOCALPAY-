@@ -1,11 +1,12 @@
 from typing import Annotated
 from uuid import UUID
 
-from fastapi import APIRouter, Depends, HTTPException, Request
+from fastapi import APIRouter, Depends, HTTPException, Query, Request
 from pydantic import BaseModel, ConfigDict, Field
 from sqlalchemy import Engine, select
 
 from app.api.auth import DatabaseSession, require_admin
+from app.api.projects import get_project
 from app.api.webhook_chaos import ExecutionView
 from app.models import ScenarioExecution, SimulationScenario
 from app.services.payment_chaos import (
@@ -77,6 +78,42 @@ def run_case(
         finish_payment_execution(session, project_id, execution_id, evidence)
         completed = session.get(ScenarioExecution, (project_id, execution_id))
         return ExecutionView.model_validate(completed)
+
+
+class PaymentRunView(ExecutionView):
+    scenario_type: PaymentChaosType
+
+
+@payment_chaos_router.get("/runs")
+def list_cases(
+    project_id: UUID,
+    session: DatabaseSession,
+    count: Annotated[int, Query(ge=1, le=100)] = 50,
+) -> list[PaymentRunView]:
+    get_project(session, project_id)
+    expire_gateway_faults(session, project_id=project_id)
+    session.commit()
+    rows = session.execute(
+        select(ScenarioExecution, SimulationScenario.scenario_type)
+        .join(
+            SimulationScenario,
+            (SimulationScenario.project_id == ScenarioExecution.project_id)
+            & (SimulationScenario.id == ScenarioExecution.scenario_id),
+        )
+        .where(
+            ScenarioExecution.project_id == project_id,
+            SimulationScenario.scenario_type.in_(list(PaymentChaosType)),
+        )
+        .order_by(ScenarioExecution.created_at.desc(), ScenarioExecution.id)
+        .limit(count)
+    )
+    return [
+        PaymentRunView(
+            **ExecutionView.model_validate(execution).model_dump(),
+            scenario_type=PaymentChaosType(scenario_type),
+        )
+        for execution, scenario_type in rows
+    ]
 
 
 @payment_chaos_router.get("/runs/{execution_id}")

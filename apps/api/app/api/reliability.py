@@ -53,18 +53,28 @@ class TestRunView(BaseModel):
     result: JsonObject | None
 
 
+def suite_definition(body: SuiteDefinition | YamlSuite) -> SuiteDefinition:
+    try:
+        return parse_suite_yaml(body.yaml) if isinstance(body, YamlSuite) else body
+    except ValueError as exc:
+        raise HTTPException(422, detail="Invalid reliability suite definition") from exc
+
+
+@reliability_router.post("/test-suites/validate")
+def validate_suite(
+    project_id: UUID, body: SuiteDefinition | YamlSuite, session: DatabaseSession
+) -> SuiteDefinition:
+    get_project(session, project_id)
+    return suite_definition(body)
+
+
 @reliability_router.post("/test-suites", status_code=201)
 def create_suite(
     project_id: UUID,
     body: SuiteDefinition | YamlSuite,
     session: DatabaseSession,
 ) -> SuiteView:
-    try:
-        definition = (
-            parse_suite_yaml(body.yaml) if isinstance(body, YamlSuite) else body
-        )
-    except ValueError as exc:
-        raise HTTPException(422) from exc
+    definition = suite_definition(body)
     try:
         with session.begin():
             get_project(session, project_id)

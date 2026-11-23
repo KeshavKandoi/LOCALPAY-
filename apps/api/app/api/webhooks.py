@@ -54,6 +54,12 @@ class EndpointCreate(BaseModel):
         return url
 
 
+class EndpointUpdate(BaseModel):
+    model_config = ConfigDict(extra="forbid")
+
+    enabled: bool = Field(strict=True)
+
+
 class EndpointView(BaseModel):
     model_config = ConfigDict(from_attributes=True)
 
@@ -112,6 +118,18 @@ def get_endpoints(project_id: UUID, session: DatabaseSession) -> list[EndpointVi
         .order_by(WebhookEndpoint.created_at, WebhookEndpoint.id)
     )
     return [EndpointView.model_validate(row) for row in rows]
+
+
+@webhook_router.patch("/webhook-endpoints/{endpoint_id}")
+def update_endpoint(
+    project_id: UUID, endpoint_id: UUID, body: EndpointUpdate, session: DatabaseSession
+) -> EndpointView:
+    with session.begin():
+        endpoint = session.get(WebhookEndpoint, (project_id, endpoint_id))
+        if endpoint is None:
+            raise HTTPException(404)
+        endpoint.enabled = body.enabled
+        return EndpointView.model_validate(endpoint)
 
 
 @webhook_router.get("/webhook-events")
