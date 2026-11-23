@@ -17,7 +17,7 @@ flowchart LR
     Runner --> Verification[Protected verification endpoint]
 ```
 
-Project API credentials establish a tenant before any gateway query. Composite foreign keys prevent links between projects. The administration API uses a separate bearer credential. Browser sessions use an HttpOnly signed cookie through a Next.js proxy.
+Project API credentials establish a tenant before any gateway query. Composite foreign keys prevent links between projects. The administration API uses a separate bearer credential. Browser sessions use an HttpOnly signed cookie through a Next.js proxy. The API Workspace and Payment Simulator use a separate gateway route that checks the supplied Basic credentials against the selected project and forwards only supported routes to the configured LocalPay upstream. [API Workspace](api-workspace.md)
 
 Capture locks the payment and order before recording balances. Refund operations lock the payment and include pending reservations in the available balance. The foreign keys and amount constraints add safeguards beneath the service layer.
 
