@@ -1,0 +1,14 @@
+[build-system]
+requires = ["hatchling==1.29.0"]
+build-backend = "hatchling.build"
+
+[project]
+name = "localpay-cli"
+version = "0.1.0"
+requires-python = ">=3.12"
+
+[project.scripts]
+localpay = "localpay_cli.cli:main"
+
+[tool.hatch.build.targets.wheel]
+packages = ["src/localpay_cli"]

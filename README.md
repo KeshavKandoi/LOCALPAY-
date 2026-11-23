@@ -122,3 +122,11 @@ Open the run's `/report/json` or `/report/html` administrative route for a repor
 Run Compose with the same `LOCALPAY_ADMIN_TOKEN` for the API and dashboard, then open `http://127.0.0.1:3000`. Use `LOCALPAY_DASHBOARD_PORT` to override the port. Sign in with the administration token, select a project, and inspect its activity, payment records, webhook attempts, chaos runs, and reports. The dashboard session uses an HttpOnly cookie. Set `LOCALPAY_DASHBOARD_SECURE_COOKIE=true` when serving it through HTTPS.
 
 To check the dashboard locally, run `npm ci`, `npm run lint`, and `npm run typecheck` in `apps/dashboard`. Run `npm test` against an isolated Compose project with `LOCALPAY_E2E_TOKEN` set to that project's dashboard token, and with `LOCALPAY_E2E_API_URL` and `LOCALPAY_E2E_DASHBOARD_URL` set when using custom ports.
+
+## Use the CLI
+
+Install the package from the checkout with `uv tool install ./packages/cli`. From the repository root, `localpay init` can create a private `.env` and `localpay up` builds and starts the stack. Check services with `localpay health` and stop the stack with `localpay down`.
+
+Set `LOCALPAY_PROJECT_ID` or use `--project PROJECT_ID` before an administration subcommand. Use `localpay scenarios list`, `localpay scenarios run payment.concurrent_capture`, `localpay test run --file suite.yaml`, or `localpay test report RUN_ID --format html`. Run a saved webhook scenario with `localpay scenarios run webhook.chaos --scenario-id ID --endpoint-id ID --event-id ID`. Run a saved definition again with `localpay test run --suite-id SUITE_ID`.
+
+The Python, FastAPI, Node.js, and Express sample applications demonstrate checkout simulation, refunds, and verified duplicate-safe webhook handling. See [the integration examples](examples/README.md).
