@@ -120,7 +120,10 @@ def execute_webhook_case(
                 raise RuntimeError("Webhook execution is missing")
             if current_execution.status != "running":
                 rows = session.execute(
-                    select(WebhookDeliveryAttempt.http_status)
+                    select(
+                        WebhookDeliveryAttempt.http_status,
+                        WebhookDeliveryAttempt.attempt_number,
+                    )
                     .join(
                         WebhookDelivery,
                         (
@@ -138,9 +141,19 @@ def execute_webhook_case(
                         WebhookDeliveryAttempt.created_at, WebhookDeliveryAttempt.id
                     )
                 )
-                statuses = [status for status in rows.scalars() if status is not None]
+                observed = [
+                    (status, attempt) for status, attempt in rows if status is not None
+                ]
+                statuses = [status for status, _ in observed]
                 return {
                     "scenario_execution_id": str(execution_id),
+                    "webhook_configuration": config.model_dump(),
+                    "event_count": len(case.event_ids),
+                    "only_invalid_signatures_observed": bool(observed)
+                    and config.failure_mode == "invalid_signature"
+                    and all(
+                        attempt <= config.failure_attempts for _, attempt in observed
+                    ),
                     "scenario_passed": current_execution.status == "succeeded",
                     "delivery_count": len(statuses),
                     "http_statuses": statuses,

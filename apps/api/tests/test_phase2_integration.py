@@ -1470,6 +1470,24 @@ def test_reliability_results_are_durable_and_scoped(
     first_case = completed["result"]["cases"][0]
     assert first_case["assertions"][0]["status"] == status
     assert admin_client.get(f"{path}/json").json() == completed
+    report_response = admin_client.get(f"{path}/report/json")
+    assert report_response.status_code == 200
+    report = report_response.json()
+    assert report["summary"]["total"] == 1 and report["summary"][status] == 1
+    assert report["started_at"] and report["finished_at"] and report["duration_ms"] >= 0
+    assert [item["event_type"] for item in report["cases"][0]["payment_timeline"]] == [
+        "payment.authorized",
+        "payment.captured",
+    ]
+    assert report["delivery_latency_ms"]["median"] is None
+    html = admin_client.get(f"{path}/report/html")
+    assert html.status_code == 200 and "capture suite" in html.text
+    assert (
+        admin_client.get(
+            f"{ADMIN_URL}/{outsider}/test-runs/{run_id}/report/json"
+        ).status_code
+        == 404
+    )
     assert (
         admin_client.get(f"{ADMIN_URL}/{outsider}/test-runs/{run_id}").status_code
         == 404
@@ -1531,3 +1549,100 @@ def test_reliability_webhook_setup_errors_are_recorded(
     result = admin_client.get(f"{root}/test-runs/{run_id}").json()
     assert result["status"] == "error"
     assert result["result"]["cases"][0]["evidence"]["error_type"] == "LookupError"
+
+
+def test_report_correlates_delivery_attempts_and_measured_latency(
+    admin_client: TestClient,
+    schema_settings: Settings,
+    database: Engine,
+) -> None:
+    owner = add_project(admin_client, "report-deliveries")
+    credentials = issue(admin_client, owner)
+    auth = (credentials["key_id"], credentials["secret"])
+    captured_payment(admin_client, auth)
+    root = f"{ADMIN_URL}/{owner}"
+    endpoint = admin_client.post(
+        f"{root}/webhook-endpoints",
+        json={
+            "url": "http://example.test",
+            "secret": uuid4().hex,
+            "enabled_events": ["payment.captured"],
+        },
+    ).json()
+    events = admin_client.get(f"{root}/webhook-events").json()
+    event_id = next(
+        event["id"] for event in events if event["event_type"] == "payment.captured"
+    )
+    scenario = admin_client.post(
+        f"{root}/webhook-scenarios",
+        json={
+            "name": "report evidence",
+            "config": {"duplicate_count": 2},
+        },
+    ).json()
+    execution = admin_client.post(
+        f"{root}/webhook-scenarios/{scenario['id']}/runs",
+        json={
+            "endpoint_id": endpoint["id"],
+            "event_ids": [event_id],
+        },
+    ).json()
+    now = datetime.now(UTC)
+    with Session(database) as session, session.begin():
+        deliveries = due_deliveries(session, now)
+    for (project, delivery_id), duration in zip(deliveries, [10, 30], strict=True):
+        with Session(database) as session, session.begin():
+            claim = claim_delivery(session, project, delivery_id, now, schema_settings)
+            assert claim is not None
+        with Session(database) as session, session.begin():
+            assert finish_delivery(
+                session,
+                claim,
+                DeliveryResult(http_status=200),
+                now,
+                duration,
+                schema_settings,
+            )
+    with Session(database) as session, session.begin():
+        run = ReliabilityTestRun(
+            project_id=owner,
+            suite_name="<script>alert(1)</script>",
+            status="failed",
+            result={
+                "cases": [
+                    {
+                        "name": "duplicates",
+                        "status": "failed",
+                        "evidence": {
+                            "scenario_execution_id": execution["id"],
+                            "event_count": 1,
+                            "webhook_configuration": {"duplicate_count": 2},
+                        },
+                        "assertions": [
+                            {
+                                "type": "application_event_count",
+                                "expected": 1,
+                                "observed": 2,
+                                "status": "failed",
+                            }
+                        ],
+                    }
+                ],
+            },
+        )
+        session.add(run)
+        session.flush()
+        run_id = run.id
+    result = admin_client.get(f"{root}/test-runs/{run_id}/report/json").json()
+    [case] = result["cases"]
+    assert len(case["deliveries"]) == 2
+    assert case["diagnostics"][0]["code"] == "duplicate_processing"
+    assert result["delivery_latency_ms"] == {
+        "count": 2,
+        "min": 10,
+        "median": 20.0,
+        "max": 30,
+    }
+    report = admin_client.get(f"{root}/test-runs/{run_id}/report/html")
+    assert "<script>" not in report.text
+    assert "&lt;script&gt;" in report.text
