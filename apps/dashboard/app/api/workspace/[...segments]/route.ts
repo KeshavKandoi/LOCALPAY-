@@ -10,6 +10,8 @@ const routes = {
 };
 const projectPattern = /^[0-9a-f]{8}(?:-[0-9a-f]{4}){3}-[0-9a-f]{12}$/;
 const limit = 524288;
+const maxInFlight = 16;
+let inFlight = 0;
 
 function fail(error: string, status: number) {
   return NextResponse.json({ error }, { status });
@@ -32,6 +34,10 @@ async function handle(request: NextRequest, context: { params: Promise<{ segment
     return fail("Enter a LocalPay key ID and secret for the selected project.", 401);
   }
 
+  if (inFlight >= maxInFlight) {
+    return NextResponse.json({ error: "Too many concurrent LocalPay requests." }, { status: 429, headers: { "Retry-After": "1" } });
+  }
+  inFlight += 1;
   const root = process.env.LOCALPAY_API_URL ?? "http://127.0.0.1:8000";
   const signal = AbortSignal.any([request.signal, AbortSignal.timeout(10000)]);
   try {
@@ -72,6 +78,8 @@ async function handle(request: NextRequest, context: { params: Promise<{ segment
     if (error instanceof BodyTooLarge) return fail("Request or response exceeded 512 KiB.", 413);
     if (signal.aborted) return fail("LocalPay request timed out or was cancelled.", 504);
     return fail("LocalPay API is unreachable.", 502);
+  } finally {
+    inFlight -= 1;
   }
 }
 

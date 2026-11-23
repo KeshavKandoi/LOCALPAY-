@@ -4,7 +4,7 @@ import { sameOrigin, sessionName, validSession } from "@/lib/session";
 
 const uuid = "[0-9a-f]{8}(?:-[0-9a-f]{4}){3}-[0-9a-f]{12}";
 const projectPaths = new RegExp(
-  "^projects/" + uuid + "/(?:credentials(?:/" + uuid + "(?:/rotate)?)?|dashboard/(?:overview|records/(?:orders|payments|refunds)(?:/(?:order|pay|rfnd)_[a-zA-Z0-9]+)?|events/" + uuid + "/replay)|webhook-(?:endpoints|events(?:/" + uuid + "/payload)?|deliveries(?:/" + uuid + "/attempts)?|scenarios(?:/" + uuid + "/runs)?|runs/" + uuid + "(?:/deliveries)?)|payment-chaos/(?:scenarios|runs(?:/" + uuid + "(?:/cancel)?)?)|test-suites(?:/" + uuid + "/runs)?|test-runs(?:/" + uuid + "(?:/(?:json|report/(?:json|html|junit)))?)?)$"
+  "^projects/" + uuid + "/(?:credentials(?:/" + uuid + "(?:/rotate)?)?|dashboard/(?:overview|records/(?:orders|payments|refunds)(?:/(?:order|pay|rfnd)_[a-zA-Z0-9]+)?|events/" + uuid + "/replay)|webhook-(?:endpoints(?:/" + uuid + ")?|events(?:/" + uuid + "/(?:payload|signed/" + uuid + "))?|deliveries(?:/" + uuid + "/attempts)?|scenarios(?:/" + uuid + "/runs)?|runs/" + uuid + "(?:/deliveries)?)|payment-chaos/(?:scenarios|runs(?:/" + uuid + "(?:/cancel)?)?)|test-suites(?:/validate|/" + uuid + "/runs)?|test-runs(?:/" + uuid + "(?:/(?:json|report/(?:json|html|junit)))?)?)$"
 );
 
 async function handle(request: NextRequest, context: { params: Promise<{ segments: string[] }> }) {
@@ -30,7 +30,7 @@ async function handle(request: NextRequest, context: { params: Promise<{ segment
       headers: { Authorization: "Bearer " + process.env.LOCALPAY_ADMIN_TOKEN, "Content-Type": "application/json" },
     });
     const headers = new Headers({ "Cache-Control": "no-store", "X-Content-Type-Options": "nosniff" });
-    for (const key of ["Content-Type", "Content-Disposition", "Content-Security-Policy"]) {
+    for (const key of ["Content-Type", "Content-Disposition", "Content-Security-Policy", "X-Razorpay-Signature", "X-Razorpay-Event-Id"]) {
       const value = response.headers.get(key);
       if (value) headers.set(key, value);
     }
@@ -41,4 +41,4 @@ async function handle(request: NextRequest, context: { params: Promise<{ segment
   }
 }
 
-export { handle as GET, handle as POST, handle as DELETE };
+export { handle as GET, handle as POST, handle as DELETE, handle as PATCH };
