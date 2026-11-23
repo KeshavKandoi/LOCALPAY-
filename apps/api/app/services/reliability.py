@@ -3,6 +3,7 @@ from datetime import UTC, datetime, timedelta
 from time import monotonic, sleep
 from uuid import UUID, uuid4
 
+from celery.exceptions import SoftTimeLimitExceeded
 from sqlalchemy import Engine, select
 from sqlalchemy.orm import Session
 
@@ -225,6 +226,29 @@ def run_suite(
     raw = begin_run(engine, project_id, run_id)
     if raw is None:
         return
+    try:
+        execute_suite(engine, settings, project_id, run_id, raw)
+    except Exception as exc:
+        with Session(engine) as session, session.begin():
+            run = session.get(
+                ReliabilityTestRun, (project_id, run_id), with_for_update=True
+            )
+            if run is not None and run.status == "running":
+                run.status = "error"
+                run.finished_at = datetime.now(UTC)
+                reason = (
+                    "deadline_exceeded"
+                    if isinstance(exc, SoftTimeLimitExceeded)
+                    else type(exc).__name__
+                )
+                run.result = {"cases": [], "error": reason}
+                logger.error("Reliability run failed run=%s reason=%s", run_id, reason)
+        raise
+
+
+def execute_suite(
+    engine: Engine, settings: Settings, project_id: UUID, run_id: UUID, raw: JsonObject
+) -> None:
     started = monotonic()
     cases: list[JsonObject] = []
     suite = SuiteDefinition.model_validate(raw)
@@ -251,6 +275,8 @@ def run_suite(
                 )
             assertions = evaluate(case.assertions, evidence)
             status = summarize([row["status"] for row in assertions])
+        except SoftTimeLimitExceeded:
+            raise
         except Exception as exc:
             logger.error(
                 "Reliability case failed run=%s error=%s", run_id, type(exc).__name__

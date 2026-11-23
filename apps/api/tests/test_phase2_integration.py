@@ -31,6 +31,7 @@ from app.models import (
     ApiCredential,
     AuditRecord,
     Base,
+    GatewayFault,
     Order,
     Payment,
     Project,
@@ -50,6 +51,11 @@ from app.services.delivery import (
     claim_delivery,
     due_deliveries,
     finish_delivery,
+)
+from app.services.payment_chaos import (
+    PaymentChaosType,
+    create_execution,
+    recover_payment_executions,
 )
 from app.services.payments import capture_payment
 from app.services.reliability import collect_runs, run_suite
@@ -1373,6 +1379,10 @@ def test_payment_chaos_transaction_scenarios(
     evidence = result["result"]
     assert evidence["passed"]
     assert evidence["amount_paid"] == 600
+    assert result["finished_at"]
+    print(
+        f"scenario={kind} execution={result['id']} status={result['status']} paid={evidence['amount_paid']} refunded={evidence['amount_refunded']}"
+    )
     if kind == "payment.delayed_authorization":
         assert evidence["elapsed_ms"] >= 20
     if kind == "payment.interrupted_transaction":
@@ -1410,9 +1420,13 @@ def test_gateway_faults_are_bounded_cancelable_and_scoped(
     assert admin_client.get("/v1/orders", auth=auth).status_code == expected
     assert admin_client.get("/v1/orders", auth=auth).status_code == expected
     assert admin_client.get("/v1/orders", auth=auth).status_code == 200
-    assert admin_client.get(f"{root}/runs/{first['id']}").json()["result"][
-        "responses"
-    ] == [expected, expected]
+    completed = admin_client.get(f"{root}/runs/{first['id']}").json()
+    assert completed["status"] == "succeeded" and completed["finished_at"]
+    assert completed["result"]["passed"] is True
+    assert completed["result"]["responses"] == [expected, expected]
+    print(
+        f"scenario={kind} execution={first['id']} status={completed['status']} responses={completed['result']['responses']}"
+    )
     second = admin_client.post(f"{root}/runs", json={"type": kind}).json()
     assert admin_client.post(f"{root}/runs/{second['id']}/cancel").status_code == 204
     assert (
@@ -1646,3 +1660,80 @@ def test_report_correlates_delivery_attempts_and_measured_latency(
     report = admin_client.get(f"{root}/test-runs/{run_id}/report/html")
     assert "<script>" not in report.text
     assert "&lt;script&gt;" in report.text
+
+
+@pytest.mark.parametrize("trigger", ["poll", "scheduler"])
+def test_gateway_fault_expires_without_gateway_traffic(
+    admin_client: TestClient, database: Engine, trigger: str
+) -> None:
+    project = add_project(admin_client, "expiry-owner")
+    root = f"{ADMIN_URL}/{project}/payment-chaos"
+    run = admin_client.post(
+        f"{root}/runs", json={"type": "payment.gateway_outage"}
+    ).json()
+    assert admin_client.get(f"{root}/runs/{run['id']}").json()["status"] == "running"
+    with Session(database) as session, session.begin():
+        fault = session.get(GatewayFault, project)
+        assert fault is not None
+        fault.expires_at = datetime.now(UTC) - timedelta(seconds=1)
+    if trigger == "scheduler":
+        recover_payment_executions(database)
+        with Session(database) as session:
+            assert session.get(GatewayFault, project) is None
+    finished = admin_client.get(f"{root}/runs/{run['id']}").json()
+    assert finished["status"] == "failed" and finished["finished_at"]
+    assert finished["result"]["responses"] == []
+    assert finished["result"]["passed"] is False
+    assert finished["result"]["reason"] == "deadline_exceeded"
+    assert finished["result"]["remaining_requests"] == 1
+    assert (
+        admin_client.post(
+            f"{root}/runs", json={"type": "payment.gateway_outage"}
+        ).status_code
+        == 201
+    )
+
+
+def test_scheduler_marks_abandoned_payment_execution_failed(
+    admin_client: TestClient, database: Engine
+) -> None:
+    project = add_project(admin_client, "abandoned-payment")
+    with Session(database) as session, session.begin():
+        run = create_execution(session, project, PaymentChaosType.CONCURRENT_CAPTURE)
+        run.created_at = datetime.now(UTC) - timedelta(minutes=6)
+        run_id = run.id
+    recover_payment_executions(database)
+    result = admin_client.get(
+        f"{ADMIN_URL}/{project}/payment-chaos/runs/{run_id}"
+    ).json()
+    assert result["status"] == "failed" and result["finished_at"]
+    assert result["result"]["reason"] == "deadline_exceeded"
+
+
+def test_suite_setup_exception_persists_terminal_error(
+    admin_client: TestClient, schema_settings: Settings, database: Engine
+) -> None:
+    project = add_project(admin_client, "broken-suite")
+    root = f"{ADMIN_URL}/{project}"
+    suite = admin_client.post(
+        f"{root}/test-suites",
+        json={
+            "name": "setup-error",
+            "tests": [
+                {
+                    "name": "capture",
+                    "scenario": "payment.concurrent_capture",
+                    "assertions": [{"type": "scenario_passed", "expected": True}],
+                }
+            ],
+        },
+    ).json()
+    run = admin_client.post(f"{root}/test-suites/{suite['id']}/runs").json()
+    run_id = UUID(run["id"])
+    with Session(database) as session, session.begin():
+        session.execute(text("UPDATE reliability_suites SET definition = '{}'::jsonb"))
+    with pytest.raises(ValueError):
+        run_suite(database, schema_settings, project, run_id)
+    result = admin_client.get(f"{root}/test-runs/{run_id}").json()
+    assert result["status"] == "error" and result["finished_at"]
+    assert result["result"]["error"] == "ValidationError"

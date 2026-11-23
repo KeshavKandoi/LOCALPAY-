@@ -1,4 +1,3 @@
-from datetime import UTC, datetime
 from typing import Annotated
 from uuid import UUID
 
@@ -17,6 +16,8 @@ from app.services.payment_chaos import (
     cancel_gateway_fault,
     create_execution,
     execute_transaction_case,
+    expire_gateway_faults,
+    finish_payment_execution,
 )
 
 payment_chaos_router = APIRouter(
@@ -65,18 +66,17 @@ def run_case(
         )
     except Exception as exc:
         with session.begin():
-            execution.result = {
-                **(execution.result or {}),
-                "error_type": type(exc).__name__,
-            }
-            execution.status = "failed"
-            execution.finished_at = datetime.now(UTC)
+            finish_payment_execution(
+                session,
+                project_id,
+                execution_id,
+                {"passed": False, "error_type": type(exc).__name__},
+            )
         raise
     with session.begin():
-        execution.result = {**(execution.result or {}), **evidence}
-        execution.status = "succeeded" if evidence["passed"] else "failed"
-        execution.finished_at = datetime.now(UTC)
-        return ExecutionView.model_validate(execution)
+        finish_payment_execution(session, project_id, execution_id, evidence)
+        completed = session.get(ScenarioExecution, (project_id, execution_id))
+        return ExecutionView.model_validate(completed)
 
 
 @payment_chaos_router.get("/runs/{execution_id}")
@@ -85,6 +85,8 @@ def get_case(
     execution_id: UUID,
     session: DatabaseSession,
 ) -> ExecutionView:
+    expire_gateway_faults(session, project_id=project_id, execution_id=execution_id)
+    session.commit()
     execution = session.scalar(
         select(ScenarioExecution)
         .join(

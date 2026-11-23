@@ -8,6 +8,7 @@ from sqlalchemy.orm import Session
 from app.core.settings import get_settings
 from app.db.session import build_engine
 from app.services.delivery import claim_delivery, finish_delivery, scan, send
+from app.services.payment_chaos import recover_payment_executions
 from app.services.reliability import collect_runs, run_suite
 
 settings = get_settings()
@@ -36,6 +37,7 @@ def worker_probe(nonce: str) -> str:
 def scan_deliveries() -> None:
     engine = build_engine(settings)
     try:
+        recover_payment_executions(engine)
         for project_id, delivery_id in scan(engine):
             celery_app.send_task(
                 "localpay.deliver_webhook",

@@ -1,6 +1,7 @@
+import logging
 from collections.abc import Callable
 from concurrent.futures import ThreadPoolExecutor
-from datetime import UTC, datetime, timedelta
+from datetime import datetime, timedelta
 from enum import StrEnum
 from threading import Barrier
 from time import monotonic, sleep
@@ -30,6 +31,8 @@ from app.services.payments import (
 )
 from app.services.refunds import RefundDetails, RefundError, create_refund
 from app.services.webhooks import record_event
+
+logger = logging.getLogger("localpay.payment_chaos")
 
 
 class PaymentChaosType(StrEnum):
@@ -95,43 +98,149 @@ def create_execution(
 def arm_gateway_fault(
     session: Session, execution: ScenarioExecution, status_code: int, requests: int
 ) -> None:
+    now = database_now(session)
     prior = session.get(GatewayFault, execution.project_id, with_for_update=True)
     if prior is not None:
-        if prior.expires_at > datetime.now(UTC) and prior.remaining > 0:
+        if prior.expires_at > now and prior.remaining > 0:
             raise ChaosConflict("An active gateway fault already exists")
-        finalize_fault(session, prior, "failed")
+        finalize_fault(session, prior, "failed", reason="deadline_exceeded")
     session.add(
         GatewayFault(
             project_id=execution.project_id,
             execution_id=execution.id,
             status_code=status_code,
             remaining=requests,
-            expires_at=datetime.now(UTC) + timedelta(minutes=2),
+            expires_at=now + timedelta(minutes=2),
         )
     )
     execution.result = {
         **(execution.result or {}),
         "responses": [],
         "expected_status": status_code,
+        "request_budget": requests,
+        "expires_at": (now + timedelta(minutes=2)).isoformat(),
     }
 
 
-def finalize_fault(session: Session, fault: GatewayFault, status: str) -> None:
+def database_now(session: Session) -> datetime:
+    now = session.scalar(select(func.clock_timestamp()))
+    if not isinstance(now, datetime):
+        raise RuntimeError("Database clock is unavailable")
+    return now
+
+
+def finalize_fault(
+    session: Session, fault: GatewayFault, status: str, *, reason: str | None = None
+) -> None:
     execution = session.get(ScenarioExecution, (fault.project_id, fault.execution_id))
     if execution is None:
         raise RuntimeError("Gateway fault execution is missing")
-    execution.status = status
-    execution.finished_at = datetime.now(UTC)
+    evidence = execution.result or {}
+    responses = evidence.get("responses", [])
+    passed = (
+        status == "succeeded"
+        and fault.remaining == 0
+        and bool(responses)
+        and len(responses) == evidence.get("request_budget", len(responses))
+        and all(response == fault.status_code for response in responses)
+    )
+    execution.status = "failed" if status == "succeeded" and not passed else status
+    execution.finished_at = database_now(session)
+    execution.result = {
+        **evidence,
+        "passed": passed,
+        "remaining_requests": fault.remaining,
+    }
+    if reason is not None:
+        execution.result = {**execution.result, "reason": reason}
+    logger.info(
+        "Gateway fault completed execution=%s status=%s remaining=%s reason=%s",
+        execution.id,
+        execution.status,
+        fault.remaining,
+        reason,
+    )
     session.delete(fault)
     session.flush()
+
+
+def expire_gateway_faults(
+    session: Session,
+    *,
+    project_id: UUID | None = None,
+    execution_id: UUID | None = None,
+) -> None:
+    query = select(GatewayFault).where(
+        GatewayFault.expires_at <= func.clock_timestamp()
+    )
+    if project_id is not None:
+        query = query.where(
+            GatewayFault.project_id == project_id,
+            GatewayFault.execution_id == execution_id,
+        )
+    faults = session.scalars(
+        query.order_by(GatewayFault.expires_at)
+        .limit(50)
+        .with_for_update(skip_locked=True)
+    ).all()
+    for fault in faults:
+        finalize_fault(session, fault, "failed", reason="deadline_exceeded")
+
+
+def finish_payment_execution(
+    session: Session, project_id: UUID, execution_id: UUID, evidence: JsonObject
+) -> None:
+    row = session.get(
+        ScenarioExecution,
+        (project_id, execution_id),
+        with_for_update=True,
+        populate_existing=True,
+    )
+    if row is not None and row.status == "running":
+        row.status = "succeeded" if evidence.get("passed") else "failed"
+        row.finished_at = database_now(session)
+        row.result = {**(row.result or {}), **evidence}
+        logger.info(
+            "Payment chaos completed execution=%s status=%s", execution_id, row.status
+        )
+
+
+def recover_payment_executions(engine: Engine) -> None:
+    with Session(engine) as session, session.begin():
+        expire_gateway_faults(session)
+        now = database_now(session)
+        scenario_types = [kind for kind in PaymentChaosType if kind not in FAULT_CODES]
+        stale = session.execute(
+            select(ScenarioExecution.project_id, ScenarioExecution.id)
+            .join(
+                SimulationScenario,
+                (SimulationScenario.project_id == ScenarioExecution.project_id)
+                & (SimulationScenario.id == ScenarioExecution.scenario_id),
+            )
+            .where(
+                ScenarioExecution.status == "running",
+                ScenarioExecution.created_at < now - timedelta(minutes=5),
+                SimulationScenario.scenario_type.in_(scenario_types),
+            )
+            .order_by(ScenarioExecution.created_at)
+            .limit(50)
+            .with_for_update(of=ScenarioExecution, skip_locked=True)
+        ).all()
+        for project, execution in stale:
+            finish_payment_execution(
+                session,
+                project,
+                execution,
+                {"passed": False, "reason": "deadline_exceeded"},
+            )
 
 
 def consume_gateway_fault(session: Session, project_id: UUID) -> int | None:
     fault = session.get(GatewayFault, project_id, with_for_update=True)
     if fault is None:
         return None
-    if fault.expires_at <= datetime.now(UTC):
-        finalize_fault(session, fault, "failed")
+    if fault.expires_at <= database_now(session):
+        finalize_fault(session, fault, "failed", reason="deadline_exceeded")
         return None
     code = fault.status_code
     execution = session.get(ScenarioExecution, (project_id, fault.execution_id))
