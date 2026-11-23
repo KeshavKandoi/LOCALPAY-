@@ -23,6 +23,7 @@ The [installation guide](docs/installation.md) covers local configuration. The [
 
 ## What you can test
 
+- Send authenticated LocalPay requests, inspect responses, and save request templates in the dashboard. [API Workspace guide](docs/api-workspace.md)
 - Create orders, simulate authorization or failure, capture payments, and issue full or partial refunds in integer minor units. [Payment guide](docs/payments.md)
 - Register a local receiver, validate signed webhook bytes, inspect attempts, and replay events. [Webhook guide](docs/webhooks.md)
 - Inject delay, duplicates, reordering, bad signatures, retryable errors, and project-scoped gateway outages. [Chaos guide](docs/chaos.md)
