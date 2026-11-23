@@ -1344,3 +1344,77 @@ def test_chaos_worker_interruption_exhausts_retry_budget(
         f"{root}/webhook-deliveries/{delivery_id}/attempts"
     ).json()
     assert len(attempts) == 1 and attempts[0]["error_code"] == "lease_expired"
+
+
+@pytest.mark.parametrize(
+    "kind",
+    [
+        "payment.duplicate",
+        "payment.timeout_retry",
+        "payment.concurrent_capture",
+        "payment.delayed_authorization",
+        "payment.failure_retry",
+        "payment.concurrent_refunds",
+        "payment.duplicate_refund",
+        "payment.ambiguous_result",
+        "payment.interrupted_transaction",
+    ],
+)
+def test_payment_chaos_transaction_scenarios(
+    admin_client: TestClient, kind: str
+) -> None:
+    project_id = add_project(admin_client, "payment-chaos")
+    root = f"{ADMIN_URL}/{project_id}/payment-chaos"
+    response = admin_client.post(f"{root}/runs", json={"type": kind, "delay_ms": 20})
+    assert response.status_code == 201, response.text
+    result = response.json()
+    assert result["status"] == "succeeded", result
+    evidence = result["result"]
+    assert evidence["passed"]
+    assert evidence["amount_paid"] == 600
+    if kind == "payment.delayed_authorization":
+        assert evidence["elapsed_ms"] >= 20
+    if kind == "payment.interrupted_transaction":
+        assert evidence["amount_paid_after_interruption"] == 0
+    if kind in {"payment.concurrent_refunds", "payment.duplicate_refund"}:
+        assert evidence["amount_refunded"] == 600
+    assert admin_client.get(f"{root}/runs/{result['id']}").json() == result
+
+
+@pytest.mark.parametrize(
+    ("kind", "expected"),
+    [
+        ("payment.gateway_outage", 503),
+        ("payment.rate_limit", 429),
+        ("payment.api_unavailability", 503),
+    ],
+)
+def test_gateway_faults_are_bounded_cancelable_and_scoped(
+    admin_client: TestClient,
+    kind: str,
+    expected: int,
+) -> None:
+    project = add_project(admin_client, "gateway-fault-owner")
+    outsider = add_project(admin_client, "gateway-fault-outsider")
+    credential = issue(admin_client, project)
+    other = issue(admin_client, outsider)
+    auth = (credential["key_id"], credential["secret"])
+    other_auth = (other["key_id"], other["secret"])
+    root = f"{ADMIN_URL}/{project}/payment-chaos"
+    response = admin_client.post(f"{root}/runs", json={"type": kind, "requests": 2})
+    assert response.status_code == 201, response.text
+    first = response.json()
+    assert first["status"] == "running"
+    assert admin_client.get("/v1/orders", auth=other_auth).status_code == 200
+    assert admin_client.get("/v1/orders", auth=auth).status_code == expected
+    assert admin_client.get("/v1/orders", auth=auth).status_code == expected
+    assert admin_client.get("/v1/orders", auth=auth).status_code == 200
+    assert admin_client.get(f"{root}/runs/{first['id']}").json()["result"][
+        "responses"
+    ] == [expected, expected]
+    second = admin_client.post(f"{root}/runs", json={"type": kind}).json()
+    assert admin_client.post(f"{root}/runs/{second['id']}/cancel").status_code == 204
+    assert (
+        admin_client.get(f"{root}/runs/{second['id']}").json()["status"] == "cancelled"
+    )
+    assert admin_client.get("/v1/orders", auth=auth).status_code == 200

@@ -132,6 +132,7 @@ class Payment(Base, ProjectRecord, UpdatedAt):
     __tablename__ = "payments"
     __table_args__ = (
         UniqueConstraint("project_id", "public_id"),
+        UniqueConstraint("project_id", "simulation_key"),
         ForeignKeyConstraint(
             ["project_id", "order_id"], ["orders.project_id", "orders.id"]
         ),
@@ -158,6 +159,8 @@ class Payment(Base, ProjectRecord, UpdatedAt):
             "'pay_' || substr(replace(gen_random_uuid()::text, '-', ''), 1, 14)"
         ),
     )
+    simulation_key: Mapped[str | None] = mapped_column(String(128))
+    simulation_outcome: Mapped[str | None] = mapped_column(String(40))
     capture_failure: Mapped[bool] = mapped_column(server_default=text("false"))
     order_id: Mapped[UUID] = mapped_column()
     amount: Mapped[int] = mapped_column(BigInteger)
@@ -369,7 +372,8 @@ class ScenarioExecution(Base, ProjectRecord):
         Index("ix_scenario_executions_project_scenario", "project_id", "scenario_id"),
         Index("ix_scenario_executions_project_run", "project_id", "test_run_id"),
         CheckConstraint(
-            "status IN ('pending', 'running', 'succeeded', 'failed')", name="status"
+            "status IN ('pending', 'running', 'succeeded', 'failed', 'cancelled')",
+            name="status",
         ),
     )
 
@@ -378,6 +382,26 @@ class ScenarioExecution(Base, ProjectRecord):
     status: Mapped[str] = mapped_column(String(16), server_default="pending")
     finished_at: Mapped[datetime | None] = mapped_column(DateTime(timezone=True))
     result: Mapped[JsonObject | None] = mapped_column(JSONB(none_as_null=True))
+
+
+class GatewayFault(Base, CreatedAt):
+    __tablename__ = "gateway_faults"
+    __table_args__ = (
+        ForeignKeyConstraint(
+            ["project_id", "execution_id"],
+            ["scenario_executions.project_id", "scenario_executions.id"],
+        ),
+        CheckConstraint("status_code IN (429, 503)", name="status_code"),
+        CheckConstraint("remaining BETWEEN 0 AND 10", name="remaining"),
+    )
+
+    project_id: Mapped[UUID] = mapped_column(
+        ForeignKey("projects.id"), primary_key=True
+    )
+    execution_id: Mapped[UUID] = mapped_column()
+    status_code: Mapped[int] = mapped_column()
+    remaining: Mapped[int] = mapped_column()
+    expires_at: Mapped[datetime] = mapped_column(DateTime(timezone=True))
 
 
 class AuditRecord(Base, ProjectRecord):

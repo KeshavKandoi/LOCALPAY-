@@ -7,7 +7,7 @@ from sqlalchemy.exc import IntegrityError
 from sqlalchemy.orm import Session
 
 from app.api.auth import DatabaseSession
-from app.api.orders import Note, ProjectId, Receipt
+from app.api.orders import GatewayProjectId, Note, ProjectId, Receipt
 from app.api.razorpay import RazorpayError, RazorpayRoute
 from app.services.refunds import (
     RefundDetails,
@@ -91,7 +91,7 @@ def persist_refund(
 def add_refund(
     payment_id: str,
     body: RefundRequest,
-    project_id: ProjectId,
+    project_id: GatewayProjectId,
     session: DatabaseSession,
     key: IdempotencyKey = None,
 ) -> dict[str, object]:
@@ -112,7 +112,7 @@ def add_refund(
 @refund_router.get("/payments/{payment_id}/refunds")
 def get_refunds(
     payment_id: str,
-    project_id: ProjectId,
+    project_id: GatewayProjectId,
     session: DatabaseSession,
     count: Annotated[int, Query(ge=1, le=100)] = 10,
     skip: Annotated[int, Query(ge=0, le=2147483647)] = 0,
@@ -131,7 +131,7 @@ def get_refunds(
 @refund_router.get("/payments/{payment_id}/refunds/{refund_id}")
 def get_refund(
     refund_id: str,
-    project_id: ProjectId,
+    project_id: GatewayProjectId,
     session: DatabaseSession,
     payment_id: str | None = None,
 ) -> dict[str, object]:

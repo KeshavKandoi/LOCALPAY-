@@ -100,3 +100,9 @@ Restart Compose after changing the environment. The scheduler finds committed ou
 Create a scenario at `POST /localpay/admin/v1/projects/{project_id}/webhook-scenarios` with a name and a config such as `{"delay_ms":1000,"duplicate_count":3,"failure_mode":"http_500","failure_attempts":1}`. Start a run at the scenario's `/runs` endpoint with an `endpoint_id` and `event_ids` from that project.
 
 Runs can schedule delays and bursts, send duplicate events with stable IDs, reverse selected events, and simulate HTTP 500, rate limiting, timeout, reset, temporary unavailability, invalid signatures, or worker interruption. Simulated failures are labeled in the attempt records. Inspect a run and its scheduled jobs under `/webhook-runs/{execution_id}`.
+
+## Run payment chaos scenarios
+
+List payment scenarios under the project's `/payment-chaos/scenarios` admin route. Start a run with `POST /localpay/admin/v1/projects/{project_id}/payment-chaos/runs`, passing a scenario `type`. Transaction scenarios create their own orders and retain the resulting records for inspection. The run records the actual capture and refund outcomes and the balance left after a simulated interruption.
+
+Outage and rate-limit scenarios affect only the project's next configured number of authenticated gateway requests. Their run record shows the status codes returned. Cancel an active gateway fault at `/payment-chaos/runs/{execution_id}/cancel`. Use `X-LocalPay-Idempotency-Key` on payment simulation requests to replay the same operation.

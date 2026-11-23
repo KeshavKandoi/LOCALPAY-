@@ -9,11 +9,28 @@ from app.api.auth import DatabaseSession, require_project
 from app.api.razorpay import RazorpayError, RazorpayRoute
 from app.models import Order
 from app.services.orders import OrderFilters, create_order, fetch_order, list_orders
+from app.services.payment_chaos import consume_gateway_fault
 
 orders_router = APIRouter(
     prefix="/v1/orders", tags=["Orders"], route_class=RazorpayRoute
 )
 ProjectId = Annotated[UUID, Depends(require_project)]
+
+
+def require_gateway_project(project_id: ProjectId, session: DatabaseSession) -> UUID:
+    code = consume_gateway_fault(session, project_id)
+    session.commit()
+    if code is not None:
+        description = (
+            "Simulated rate limit."
+            if code == 429
+            else "Simulated gateway unavailability."
+        )
+        raise RazorpayError(description, status=code)
+    return project_id
+
+
+GatewayProjectId = Annotated[UUID, Depends(require_gateway_project)]
 Receipt = Annotated[str, StringConstraints(max_length=40, pattern=r"^[^\x00]*$")]
 Note = Annotated[str, StringConstraints(max_length=256, pattern=r"^[^\x00]*$")]
 CURRENCIES = frozenset(
@@ -74,7 +91,7 @@ class OrderCollection(BaseModel):
 
 @orders_router.post("")
 def add_order(
-    body: OrderCreate, project_id: ProjectId, session: DatabaseSession
+    body: OrderCreate, project_id: GatewayProjectId, session: DatabaseSession
 ) -> OrderView:
     if body.currency not in CURRENCIES:
         raise RazorpayError(
@@ -112,7 +129,7 @@ def add_order(
 
 @orders_router.get("/{order_id}")
 def get_order(
-    order_id: str, project_id: ProjectId, session: DatabaseSession
+    order_id: str, project_id: GatewayProjectId, session: DatabaseSession
 ) -> OrderView:
     order = fetch_order(session, project_id, order_id)
     if order is None:
@@ -122,7 +139,7 @@ def get_order(
 
 @orders_router.get("")
 def get_orders(
-    project_id: ProjectId,
+    project_id: GatewayProjectId,
     session: DatabaseSession,
     count: Annotated[int, Query(ge=1, le=100)] = 10,
     skip: Annotated[int, Query(ge=0, le=2147483647)] = 0,

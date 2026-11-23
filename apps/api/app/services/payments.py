@@ -81,6 +81,7 @@ def simulate_payment(
     order_id: str,
     method: str,
     outcome: Outcome,
+    simulation_key: str | None = None,
 ) -> Payment:
     order = session.scalar(
         select(Order)
@@ -89,6 +90,23 @@ def simulate_payment(
     )
     if order is None:
         raise PaymentError("The id provided does not exist", "order_id")
+    if simulation_key is not None:
+        existing = session.scalar(
+            select(Payment).where(
+                Payment.project_id == project_id,
+                Payment.simulation_key == simulation_key,
+            )
+        )
+        if existing is not None:
+            if (
+                existing.order_id != order.id
+                or existing.method != method
+                or existing.simulation_outcome != outcome
+            ):
+                raise PaymentError(
+                    "The simulation key was used for a different request."
+                )
+            return existing
     if order.status == "paid" or order.amount_due == 0:
         raise PaymentError("The order is already paid.", "order_id")
     payment = Payment(
@@ -99,6 +117,8 @@ def simulate_payment(
         method=method,
         status="created",
         capture_failure=outcome == Outcome.CAPTURE_FAILED,
+        simulation_key=simulation_key,
+        simulation_outcome=outcome,
     )
     if outcome in FAILURE_DETAILS:
         transition(payment, "failed")

@@ -1,11 +1,12 @@
-from typing import Literal
+from typing import Annotated, Literal
 
-from fastapi import APIRouter, HTTPException, Response
+from fastapi import APIRouter, Header, HTTPException, Response
 from pydantic import BaseModel, ConfigDict, Field, StrictInt
 from sqlalchemy import select
+from sqlalchemy.exc import IntegrityError
 
 from app.api.auth import DatabaseSession
-from app.api.orders import ProjectId
+from app.api.orders import GatewayProjectId, ProjectId
 from app.api.razorpay import RazorpayError, RazorpayRoute
 from app.models import Order, Payment
 from app.services.payments import (
@@ -66,10 +67,24 @@ def add_simulation(
     response: Response,
     project_id: ProjectId,
     session: DatabaseSession,
+    simulation_key: Annotated[
+        str | None,
+        Header(
+            alias="X-LocalPay-Idempotency-Key",
+            min_length=10,
+            max_length=128,
+            pattern=r"^[a-zA-Z0-9_-]+$",
+        ),
+    ] = None,
 ) -> PaymentView:
     try:
         payment = simulate_payment(
-            session, project_id, body.order_id, body.method, body.scenario
+            session,
+            project_id,
+            body.order_id,
+            body.method,
+            body.scenario,
+            simulation_key,
         )
         result = PaymentView.from_payment(payment, body.order_id)
         session.commit()
@@ -78,6 +93,14 @@ def add_simulation(
         raise HTTPException(
             404 if exc.description == "The id provided does not exist" else 409
         ) from None
+    except IntegrityError as exc:
+        session.rollback()
+        if (
+            getattr(getattr(exc.orig, "diag", None), "constraint_name", None)
+            == "uq_payments_project_id_simulation_key"
+        ):
+            raise HTTPException(409) from None
+        raise
     if body.scenario == Outcome.TIMEOUT:
         response.status_code = 504
     elif body.scenario == Outcome.NETWORK_INTERRUPTION:
@@ -87,7 +110,7 @@ def add_simulation(
 
 @payments_router.get("/{payment_id}")
 def get_payment(
-    payment_id: str, project_id: ProjectId, session: DatabaseSession
+    payment_id: str, project_id: GatewayProjectId, session: DatabaseSession
 ) -> PaymentView:
     payment = fetch_payment(session, project_id, payment_id)
     if payment is None:
@@ -106,7 +129,7 @@ def get_payment(
 def capture(
     payment_id: str,
     body: CaptureRequest,
-    project_id: ProjectId,
+    project_id: GatewayProjectId,
     session: DatabaseSession,
 ) -> PaymentView:
     try:
