@@ -8,7 +8,7 @@ from pydantic import SecretStr
 from sqlalchemy import select
 from sqlalchemy.orm import Session
 
-from app.models import WebhookEndpoint, WebhookEvent
+from app.models import WebhookDelivery, WebhookEndpoint, WebhookEvent
 
 EVENT_TYPES = frozenset(
     {
@@ -59,6 +59,20 @@ def record_event(
     )
     session.add(event)
     session.flush()
+    endpoints = session.scalars(
+        select(WebhookEndpoint.id).where(
+            WebhookEndpoint.project_id == project_id,
+            WebhookEndpoint.enabled.is_(True),
+            WebhookEndpoint.secret_ciphertext.is_not(None),
+            WebhookEndpoint.enabled_events.contains([event_type]),
+        )
+    )
+    session.add_all(
+        WebhookDelivery(
+            project_id=project_id, event_id=event.id, endpoint_id=endpoint_id
+        )
+        for endpoint_id in endpoints
+    )
     return event
 
 

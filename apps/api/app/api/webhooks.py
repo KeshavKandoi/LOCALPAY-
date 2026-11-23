@@ -11,7 +11,12 @@ from sqlalchemy.exc import IntegrityError
 from app.api.auth import DatabaseSession, require_admin
 from app.api.projects import get_project
 from app.core.settings import Settings
-from app.models import WebhookEndpoint, WebhookEvent
+from app.models import (
+    WebhookDelivery,
+    WebhookDeliveryAttempt,
+    WebhookEndpoint,
+    WebhookEvent,
+)
 from app.services.webhooks import fetch_endpoint_secret, protect_secret, signed_headers
 
 webhook_router = APIRouter(
@@ -156,3 +161,59 @@ def get_signed_payload(
     headers = signed_headers(event, ciphertext, encryption_key)
     headers["Cache-Control"] = "no-store"
     return Response(event.payload, media_type="application/json", headers=headers)
+
+
+class DeliveryView(BaseModel):
+    model_config = ConfigDict(from_attributes=True)
+
+    id: UUID
+    event_id: UUID
+    endpoint_id: UUID
+    status: str
+    attempt_count: int
+    next_retry_at: datetime
+
+
+class AttemptView(BaseModel):
+    model_config = ConfigDict(from_attributes=True)
+
+    attempt_number: int
+    http_status: int | None
+    duration_ms: int | None
+    error_code: str | None
+    created_at: datetime
+
+
+@webhook_router.get("/webhook-deliveries")
+def get_deliveries(
+    project_id: UUID,
+    session: DatabaseSession,
+    count: Annotated[int, Query(ge=1, le=100)] = 50,
+) -> list[DeliveryView]:
+    get_project(session, project_id)
+    rows = session.scalars(
+        select(WebhookDelivery)
+        .where(WebhookDelivery.project_id == project_id)
+        .order_by(WebhookDelivery.created_at.desc(), WebhookDelivery.id.desc())
+        .limit(count)
+    )
+    return [DeliveryView.model_validate(row) for row in rows]
+
+
+@webhook_router.get("/webhook-deliveries/{delivery_id}/attempts")
+def get_attempts(
+    project_id: UUID, delivery_id: UUID, session: DatabaseSession
+) -> list[AttemptView]:
+    delivery = session.get(WebhookDelivery, (project_id, delivery_id))
+    if delivery is None:
+        raise HTTPException(404)
+    rows = session.scalars(
+        select(WebhookDeliveryAttempt)
+        .where(
+            WebhookDeliveryAttempt.project_id == project_id,
+            WebhookDeliveryAttempt.event_id == delivery.event_id,
+            WebhookDeliveryAttempt.endpoint_id == delivery.endpoint_id,
+        )
+        .order_by(WebhookDeliveryAttempt.attempt_number)
+    )
+    return [AttemptView.model_validate(row) for row in rows]

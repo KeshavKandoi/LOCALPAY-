@@ -1,7 +1,12 @@
 import os
 from collections.abc import Iterator
 from concurrent.futures import ThreadPoolExecutor
-from threading import Barrier
+from datetime import UTC, datetime, timedelta
+from http.server import BaseHTTPRequestHandler, ThreadingHTTPServer
+from signal import SIGKILL
+from subprocess import DEVNULL, Popen
+from threading import Barrier, Thread
+from time import monotonic, sleep
 from typing import Any
 from uuid import UUID, uuid4
 
@@ -33,11 +38,18 @@ from app.models import (
     ReliabilityTestRun,
     ScenarioExecution,
     SimulationScenario,
+    WebhookDelivery,
     WebhookDeliveryAttempt,
     WebhookEndpoint,
     WebhookEvent,
 )
 from app.services.credentials import credential_verifier, issue_credential
+from app.services.delivery import (
+    DeliveryClaim,
+    DeliveryResult,
+    claim_delivery,
+    finish_delivery,
+)
 from app.services.payments import capture_payment
 from app.services.webhooks import verify_signature
 
@@ -946,3 +958,223 @@ def test_webhook_snapshots_and_signatures_are_immutable_and_scoped(
             session.execute(
                 text("UPDATE webhook_events SET payload = decode('00', 'hex')")
             )
+
+
+def test_outbox_recovers_expired_claim_and_rejects_stale_completion(
+    admin_client: TestClient, schema_settings: Settings, database: Engine
+) -> None:
+    project_id = add_project(admin_client, "outbox-recovery")
+    credential = issue(admin_client, project_id)
+    auth = (credential["key_id"], credential["secret"])
+    endpoint = admin_client.post(
+        f"{ADMIN_URL}/{project_id}/webhook-endpoints",
+        json={
+            "url": "http://example.test",
+            "secret": uuid4().hex,
+            "enabled_events": ["payment.captured"],
+        },
+    )
+    assert endpoint.status_code == 201
+    captured_payment(admin_client, auth)
+    now = datetime.now(UTC)
+    with Session(database) as session, session.begin():
+        row = session.scalar(select(WebhookDelivery))
+        assert row is not None
+        delivery_id = row.id
+        assert row.attempt_count == 0
+    with Session(database) as session, session.begin():
+        first = claim_delivery(session, project_id, delivery_id, now, schema_settings)
+        assert first is not None
+    with Session(database) as session, session.begin():
+        assert (
+            claim_delivery(session, project_id, delivery_id, now, schema_settings)
+            is None
+        )
+    later = now + timedelta(seconds=31)
+    with Session(database) as session, session.begin():
+        second = claim_delivery(
+            session, project_id, delivery_id, later, schema_settings
+        )
+        assert (
+            second is not None
+            and second.attempt == 2
+            and second.payload == first.payload
+        )
+        assert second.headers == first.headers
+    with Session(database) as session, session.begin():
+        assert not finish_delivery(
+            session, first, DeliveryResult(http_status=200), later, 3, schema_settings
+        )
+        assert finish_delivery(
+            session, second, DeliveryResult(http_status=200), later, 5, schema_settings
+        )
+    response = admin_client.get(
+        f"{ADMIN_URL}/{project_id}/webhook-deliveries/{delivery_id}/attempts"
+    )
+    assert [
+        (entry["error_code"], entry["http_status"]) for entry in response.json()
+    ] == [
+        ("lease_expired", None),
+        (None, 200),
+    ]
+
+
+def test_real_celery_delivery_process(
+    admin_client: TestClient,
+    schema_settings: Settings,
+    database: Engine,
+) -> None:
+    observed: list[tuple[bytes, str]] = []
+
+    class Receiver(BaseHTTPRequestHandler):
+        def do_POST(self) -> None:
+            body = self.rfile.read(int(self.headers["Content-Length"]))
+            observed.append((body, self.headers["X-Razorpay-Signature"]))
+            self.send_response(500 if len(observed) == 1 else 200)
+            self.end_headers()
+
+        def log_message(self, format: str, *args: object) -> None:
+            return
+
+    receiver = ThreadingHTTPServer(("127.0.0.1", 0), Receiver)
+    receiver_thread = Thread(target=receiver.serve_forever, daemon=True)
+    receiver_thread.start()
+    secret = uuid4().hex
+    project_id = add_project(admin_client, "outbox-worker")
+    credential = issue(admin_client, project_id)
+    auth = (credential["key_id"], credential["secret"])
+    origin = f"http://127.0.0.1:{receiver.server_port}"
+    try:
+        response = admin_client.post(
+            f"{ADMIN_URL}/{project_id}/webhook-endpoints",
+            json={
+                "url": origin,
+                "secret": secret,
+                "enabled_events": ["payment.captured"],
+            },
+        )
+        assert response.status_code == 201, response.text
+        captured_payment(admin_client, auth)
+        with Session(database) as session:
+            delivery_id = session.scalar(select(WebhookDelivery.id))
+        assert delivery_id is not None
+        encryption_key = schema_settings.webhook_encryption_key
+        assert encryption_key is not None
+        queue = f"localpay-test-{uuid4().hex}"
+        env = {
+            **os.environ,
+            "LOCALPAY_DATABASE_URL": str(schema_settings.database_url),
+            "LOCALPAY_REDIS_URL": str(schema_settings.redis_url),
+            "LOCALPAY_WEBHOOK_ENCRYPTION_KEY": encryption_key.get_secret_value(),
+            "LOCALPAY_WEBHOOK_TARGETS": f'{{"{origin}":"127.0.0.1"}}',
+            "LOCALPAY_WEBHOOK_RETRY_SECONDS": "3",
+            "LOCALPAY_CELERY_QUEUE": queue,
+        }
+
+        def start_worker() -> Popen[bytes]:
+            return Popen(
+                [
+                    "celery",
+                    "-A",
+                    "app.workers.celery_app:celery_app",
+                    "worker",
+                    "--pool=solo",
+                    "--beat",
+                    "--schedule",
+                    f"/tmp/{queue}",
+                ],
+                env=env,
+                stdout=DEVNULL,
+                stderr=DEVNULL,
+                start_new_session=True,
+            )
+
+        def wait_for_state(worker: Popen[bytes], expected: str) -> None:
+            deadline = monotonic() + 20
+            while monotonic() < deadline:
+                assert worker.poll() is None
+                with Session(database) as session:
+                    delivery = session.get(WebhookDelivery, (project_id, delivery_id))
+                    assert delivery is not None
+                    if delivery.status == expected:
+                        return
+                sleep(0.05)
+            pytest.fail(f"Worker did not reach {expected}")
+
+        with start_worker() as worker:
+            try:
+                wait_for_state(worker, "retry")
+            finally:
+                if worker.poll() is None:
+                    os.killpg(worker.pid, SIGKILL)
+                worker.wait(timeout=10)
+        with start_worker() as replacement:
+            try:
+                wait_for_state(replacement, "delivered")
+                assert len(observed) == 2
+                assert observed[0] == observed[1]
+                assert verify_signature(observed[0][0], secret.encode(), observed[0][1])
+            finally:
+                if replacement.poll() is None:
+                    replacement.terminate()
+                replacement.wait(timeout=15)
+    finally:
+        receiver.shutdown()
+        receiver.server_close()
+        receiver_thread.join(timeout=5)
+
+
+def test_outbox_concurrent_claims_and_retry_exhaustion(
+    admin_client: TestClient,
+    schema_settings: Settings,
+    database: Engine,
+) -> None:
+    settings = schema_settings.model_copy(update={"webhook_max_attempts": 1})
+    project_id = add_project(admin_client, "outbox-exhaustion")
+    credential = issue(admin_client, project_id)
+    auth = (credential["key_id"], credential["secret"])
+    endpoint = admin_client.post(
+        f"{ADMIN_URL}/{project_id}/webhook-endpoints",
+        json={
+            "url": "http://example.test",
+            "secret": uuid4().hex,
+            "enabled_events": ["payment.captured"],
+        },
+    )
+    assert endpoint.status_code == 201
+    captured_payment(admin_client, auth)
+    with Session(database) as session:
+        stored_id = session.scalar(select(WebhookDelivery.id))
+    assert stored_id is not None
+    delivery_id = stored_id
+    now = datetime.now(UTC)
+    barrier = Barrier(2)
+
+    def claim_once(worker: int) -> DeliveryClaim | None:
+        with Session(database) as session, session.begin():
+            barrier.wait(timeout=10)
+            return claim_delivery(session, project_id, delivery_id, now, settings)
+
+    with ThreadPoolExecutor(max_workers=2) as executor:
+        claims = [
+            claim for claim in executor.map(claim_once, range(2)) if claim is not None
+        ]
+    assert len(claims) == 1
+    with Session(database) as session, session.begin():
+        assert finish_delivery(
+            session,
+            claims[0],
+            DeliveryResult(http_status=503, retryable=True),
+            now,
+            4,
+            settings,
+        )
+    with Session(database) as session, session.begin():
+        assert (
+            claim_delivery(
+                session, project_id, delivery_id, now + timedelta(seconds=60), settings
+            )
+            is None
+        )
+        row = session.get(WebhookDelivery, (project_id, delivery_id))
+        assert row is not None and row.status == "failed" and row.attempt_count == 1

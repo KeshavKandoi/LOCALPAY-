@@ -88,3 +88,9 @@ For explicit pending or failed outcomes, use `POST /localpay/v1/simulations/paym
 Set `LOCALPAY_WEBHOOK_ENCRYPTION_KEY` in the ignored `.env` file to a URL-safe base64 encoding of 32 random bytes. You can generate the value with `python3 -c 'import base64,secrets; print(base64.urlsafe_b64encode(secrets.token_bytes(32)).decode())'`. Keep this key stable for the database containing the encrypted webhook secrets.
 
 With the admin token, register an endpoint at `POST /localpay/admin/v1/projects/{project_id}/webhook-endpoints` using `url`, `secret`, and `enabled_events`. Supported events include payment authorization, capture, and failure, plus refund creation, completion, and failure. List events at `GET /localpay/admin/v1/projects/{project_id}/webhook-events` and inspect a signed body at `GET /localpay/admin/v1/projects/{project_id}/webhook-events/{event_id}/signed/{endpoint_id}`. The signature uses HMAC-SHA256 over the stored bytes and the response includes the event ID and signature headers.
+
+## Deliver webhooks to a local receiver
+
+Configure `LOCALPAY_WEBHOOK_TARGETS` as JSON mapping an allowed receiver origin to its local IP address. For example, `{"http://receiver:9000":"172.20.0.10"}` allows that exact scheme, host, and port and pins transport to that IP. From within Compose, use the receiver's address on a shared network. The transport runs without proxies or redirects. Public and link-local addresses are rejected.
+
+Restart Compose after changing the environment. The scheduler finds committed outbox rows and the Celery worker claims and delivers them. HTTP 408, 429, 5xx, and transport failures retry with bounded exponential backoff. A lease lets another worker recover an interrupted delivery. The receiver should deduplicate using `X-Razorpay-Event-Id`. List deliveries and their attempts under the project's `/webhook-deliveries` administrative API.

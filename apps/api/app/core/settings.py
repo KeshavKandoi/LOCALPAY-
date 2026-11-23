@@ -7,12 +7,19 @@ from pydantic_settings import BaseSettings, SettingsConfigDict
 
 
 class Settings(BaseSettings):
-    model_config = SettingsConfigDict(env_prefix="LOCALPAY_", hide_input_in_errors=True)
+    model_config = SettingsConfigDict(
+        env_prefix="LOCALPAY_", hide_input_in_errors=True, env_ignore_empty=True
+    )
 
     database_url: PostgresDsn
     redis_url: RedisDsn
     admin_token: SecretStr | None = None
     webhook_encryption_key: SecretStr | None = None
+    celery_queue: str = Field(default="celery", pattern=r"^[a-zA-Z0-9_-]{1,96}$")
+    webhook_targets: dict[str, str] = Field(default_factory=dict)
+    webhook_max_attempts: int = Field(default=5, ge=1, le=10)
+    webhook_timeout_seconds: int = Field(default=3, ge=1, le=5)
+    webhook_retry_seconds: int = Field(default=2, ge=1, le=60)
     dependency_timeout_seconds: int = Field(default=2, ge=1, le=10)
 
     @field_validator("admin_token", mode="before")

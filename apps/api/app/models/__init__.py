@@ -256,6 +256,8 @@ class WebhookDelivery(Base, ProjectRecord):
     next_retry_at: Mapped[datetime] = mapped_column(
         DateTime(timezone=True), server_default=func.now()
     )
+    lease_token: Mapped[UUID | None] = mapped_column()
+    leased_until: Mapped[datetime | None] = mapped_column(DateTime(timezone=True))
     delivery_metadata: Mapped[JsonObject] = mapped_column(
         JSONB, server_default=text("'{}'::jsonb")
     )
