@@ -70,3 +70,9 @@ Use the issued key ID and secret as the HTTP Basic username and password for `GE
 Use the LocalPay Basic credentials with `POST /v1/orders`, `GET /v1/orders/{order_id}`, or `GET /v1/orders`. Amounts are integers in the requested currency’s smallest unit. Each project has its own receipt namespace. Listing supports `count`, `skip`, `receipt`, `from`, `to`, and `authorized`.
 
 This order API covers the core create, fetch, and list contract. The currency allowlist is fixed for the simulator. Optional Razorpay features such as offer processing, COD, partial-payment configuration, token creation, and related-entity expansion are outside the current scope. LocalPay makes no requests to live gateways.
+
+## Simulate and capture payments
+
+Send `POST /localpay/v1/simulations/payments` with a LocalPay Basic credential and a body such as `{"order_id":"order_…","scenario":"payment.success","method":"upi"}`. Fetch the result with `GET /v1/payments/{payment_id}`. Capture an authorized payment through `POST /v1/payments/{payment_id}/capture` with the authorized amount and matching currency.
+
+The simulation also supports `payment.failed`, `payment.insufficient_funds`, `payment.authorization_failed`, `payment.capture_failed`, `payment.timeout`, and `payment.network_interruption`. The last two leave a persisted payment in `created` and return a synthetic HTTP 504 or 503. Capturing a payment updates its order in the same transaction. The API covers the core payment fields and simulates full capture of the authorized amount.

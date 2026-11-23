@@ -1,5 +1,7 @@
 import os
 from collections.abc import Iterator
+from concurrent.futures import ThreadPoolExecutor
+from threading import Barrier
 from typing import Any
 from uuid import UUID, uuid4
 
@@ -35,6 +37,7 @@ from app.models import (
     WebhookEvent,
 )
 from app.services.credentials import credential_verifier, issue_credential
+from app.services.payments import capture_payment
 
 ADMIN_URL = "/localpay/admin/v1/projects"
 PROJECT_URL = "/localpay/v1/project"
@@ -586,3 +589,121 @@ def test_order_list_filters_and_validation(admin_client: TestClient) -> None:
     )
     assert malformed.status_code == 400
     assert admin_client.get(path, auth=auth, params={"count": 101}).status_code == 400
+
+
+def test_payment_scenarios_and_capture_contract(admin_client: TestClient) -> None:
+    project_id = add_project(admin_client, "payment-contract")
+    key = issue(admin_client, project_id)
+    auth = (key["key_id"], key["secret"])
+    order = admin_client.post(
+        "/v1/orders", auth=auth, json={"amount": 600, "currency": "INR"}
+    ).json()
+    for scenario, expected_status, state in (
+        ("payment.failed", 201, "failed"),
+        ("payment.insufficient_funds", 201, "failed"),
+        ("payment.authorization_failed", 201, "failed"),
+        ("payment.capture_failed", 201, "authorized"),
+        ("payment.timeout", 504, "created"),
+        ("payment.network_interruption", 503, "created"),
+        ("payment.success", 201, "authorized"),
+    ):
+        response = admin_client.post(
+            "/localpay/v1/simulations/payments",
+            auth=auth,
+            json={"scenario": scenario, "order_id": order["id"]},
+        )
+        assert response.status_code == expected_status, response.text
+        payment = response.json()
+        assert payment["status"] == state
+        path = f"/v1/payments/{payment['id']}"
+        assert admin_client.get(path, auth=auth).json() == payment
+        if scenario != "payment.success":
+            assert (
+                admin_client.post(
+                    f"{path}/capture",
+                    auth=auth,
+                    json={"amount": 600, "currency": "INR"},
+                ).status_code
+                == 400
+            )
+    path = f"/v1/payments/{payment['id']}"
+    for request in (
+        {"amount": 500, "currency": "INR"},
+        {"amount": 600, "currency": "USD"},
+    ):
+        assert (
+            admin_client.post(f"{path}/capture", auth=auth, json=request).status_code
+            == 400
+        )
+    assert (
+        admin_client.get("/v1/orders", auth=auth, params={"authorized": 1}).json()[
+            "count"
+        ]
+        == 1
+    )
+    result = admin_client.post(
+        f"{path}/capture", auth=auth, json={"amount": 600, "currency": "INR"}
+    )
+    assert result.status_code == 200, result.text
+    assert result.json()["status"] == "captured"
+    assert (
+        admin_client.post(
+            f"{path}/capture", auth=auth, json={"amount": 600, "currency": "INR"}
+        ).status_code
+        == 400
+    )
+    assert admin_client.get(f"/v1/orders/{order['id']}", auth=auth).json() == {
+        **order,
+        "amount_paid": 600,
+        "amount_due": 0,
+        "status": "paid",
+        "attempts": 7,
+    }
+    outsider = issue(admin_client, add_project(admin_client, "payment-outsider"))
+    other_auth = (outsider["key_id"], outsider["secret"])
+    assert admin_client.get(path, auth=other_auth).status_code == 400
+
+
+def test_concurrent_captures_cannot_overpay_order(
+    admin_client: TestClient, schema_settings: Settings, database: Engine
+) -> None:
+    project_id = add_project(admin_client, "concurrent-capture")
+    key = issue(admin_client, project_id)
+    auth = (key["key_id"], key["secret"])
+    order = admin_client.post(
+        "/v1/orders", auth=auth, json={"amount": 600, "currency": "INR"}
+    ).json()
+    payment_ids = [
+        admin_client.post(
+            "/localpay/v1/simulations/payments",
+            auth=auth,
+            json={"order_id": order["id"]},
+        ).json()["id"]
+        for _ in range(2)
+    ]
+    with (
+        pytest.raises(RuntimeError, match="rollback"),
+        Session(database) as session,
+        session.begin(),
+    ):
+        capture_payment(session, project_id, payment_ids[0], 600, "INR")
+        raise RuntimeError("rollback")
+    assert (
+        admin_client.get(f"/v1/orders/{order['id']}", auth=auth).json()["amount_paid"]
+        == 0
+    )
+    barrier = Barrier(2)
+
+    def capture_one(payment_id: str) -> int:
+        with TestClient(create_app(schema_settings)) as client:
+            barrier.wait(timeout=10)
+            return client.post(
+                f"/v1/payments/{payment_id}/capture",
+                auth=auth,
+                json={"amount": 600, "currency": "INR"},
+            ).status_code
+
+    with ThreadPoolExecutor(max_workers=2) as executor:
+        assert sorted(executor.map(capture_one, payment_ids)) == [200, 400]
+    record = admin_client.get(f"/v1/orders/{order['id']}", auth=auth).json()
+    assert record["amount_paid"] == 600 and record["amount_due"] == 0

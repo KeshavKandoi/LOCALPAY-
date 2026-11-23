@@ -131,6 +131,7 @@ class Order(Base, ProjectRecord):
 class Payment(Base, ProjectRecord, UpdatedAt):
     __tablename__ = "payments"
     __table_args__ = (
+        UniqueConstraint("project_id", "public_id"),
         ForeignKeyConstraint(
             ["project_id", "order_id"], ["orders.project_id", "orders.id"]
         ),
@@ -151,6 +152,13 @@ class Payment(Base, ProjectRecord, UpdatedAt):
         Index("ix_payments_project_order", "project_id", "order_id"),
     )
 
+    public_id: Mapped[str] = mapped_column(
+        String(18),
+        server_default=text(
+            "'pay_' || substr(replace(gen_random_uuid()::text, '-', ''), 1, 14)"
+        ),
+    )
+    capture_failure: Mapped[bool] = mapped_column(server_default=text("false"))
     order_id: Mapped[UUID] = mapped_column()
     amount: Mapped[int] = mapped_column(BigInteger)
     amount_authorized: Mapped[int] = mapped_column(BigInteger, server_default="0")
