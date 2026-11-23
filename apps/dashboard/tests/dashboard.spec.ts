@@ -83,24 +83,31 @@ test("webhook replay, payment chaos, reliability execution, and export", async (
   await page.getByRole("combobox", { name: "Project" }).selectOption({ label: sample.name });
   await page.getByRole("link", { name: "Settings" }).click();
   await page.getByLabel("Receiver URL").fill("http://receiver.example.test/payments");
-  await page.getByLabel("Webhook secret").fill(randomUUID());
+  const webhookSecret = randomUUID();
+  await page.getByLabel("Webhook secret").fill(webhookSecret);
   await page.getByLabel("Event subscriptions").selectOption("payment.captured");
   await page.getByRole("button", { name: "Register receiver" }).click();
   await expect(page.getByText("Receiver registered.")).toBeVisible();
   await page.getByRole("link", { name: "Webhooks" }).click();
   await page.getByRole("button", { name: "payment.captured", exact: true }).click();
+  await page.getByLabel("Signature receiver").selectOption({ label: "http://receiver.example.test/payments" });
+  await page.getByLabel("Verification secret").fill(webhookSecret);
+  await page.getByRole("button", { name: "Verify webhook signature" }).click();
+  await expect(page.getByText("Signature verified against the original payload bytes.")).toBeVisible();
   await page.getByLabel("Replay receiver").selectOption({ label: "http://receiver.example.test/payments" });
   await page.getByRole("button", { name: "Replay webhook" }).click();
   await expect(page.getByText("Replay queued.")).toBeVisible();
   await page.getByRole("link", { name: "Chaos Lab" }).click();
   await page.getByLabel("Payment scenario").selectOption("payment.concurrent_capture");
   await page.getByRole("button", { name: "Run payment scenario" }).click();
-  await expect(page.getByText("succeeded", { exact: true })).toBeVisible();
+  await expect(page.getByText("succeeded", { exact: true }).first()).toBeVisible();
 
   await page.getByRole("link", { name: "Test Runner" }).click();
   await page.getByLabel("YAML definition").fill(
     "name: Browser smoke\ntests:\n  - name: Capture race\n    scenario: payment.concurrent_capture\n    assertions:\n      - type: amount_paid\n        expected: 600",
   );
+  await page.getByRole("button", { name: "Validate draft" }).click();
+  await expect(page.getByText("Suite definition is valid.")).toBeVisible();
   await page.getByRole("button", { name: "Save test suite" }).click();
   await expect(page.getByText("Test suite saved.")).toBeVisible();
   await page.getByRole("button", { name: "Run test suite" }).click();
@@ -111,6 +118,9 @@ test("webhook replay, payment chaos, reliability execution, and export", async (
   const download = page.waitForEvent("download");
   await page.getByRole("link", { name: "Export HTML" }).click();
   expect((await download).suggestedFilename()).toMatch(/^localpay-report-.*\.html$/);
+  const junit = page.waitForEvent("download");
+  await page.getByRole("link", { name: "Export JUnit" }).click();
+  expect((await junit).suggestedFilename()).toMatch(/^localpay-report-.*\.xml$/);
 });
 
 test("dashboard authentication caps request size and rejects cross-origin login", async ({ request, baseURL }) => {
@@ -233,4 +243,54 @@ test("API Workspace imports LocalPay paths from OpenAPI, Postman, and cURL", asy
   await expect(page.getByLabel("Request URL")).toHaveValue("/health");
   await page.getByRole("button", { name: "Send request" }).click();
   await expect(page.getByRole("region", { name: "Response viewer" }).getByRole("status")).toContainText("HTTP 200");
+});
+
+test("suite validation is non-mutating and payment runs are project scoped", async ({ request }) => {
+  const first = await seed(request);
+  const second = await seed(request);
+  const root = (id: string) => apiOrigin + "/localpay/admin/v1/projects/" + id;
+  const headers = { authorization: "Bearer " + token };
+  const suite = { yaml: "name: Draft validation\ntests:\n  - name: Capture\n    scenario: payment.concurrent_capture\n    assertions:\n      - type: amount_paid\n        expected: 600" };
+  const unauthenticated = await request.post(root(first.project.id) + "/test-suites/validate", { data: suite });
+  expect(unauthenticated.status()).toBe(401);
+  const validation = await request.post(root(first.project.id) + "/test-suites/validate", { headers, data: suite });
+  expect(validation.status()).toBe(200);
+  expect((await validation.json()).name).toBe("Draft validation");
+  const invalid = await request.post(root(first.project.id) + "/test-suites/validate", { headers, data: { yaml: "tests: false" } });
+  expect(invalid.status()).toBe(422);
+  const suites = await request.get(root(first.project.id) + "/test-suites", { headers });
+  expect(await suites.json()).toEqual([]);
+  const started = await request.post(root(first.project.id) + "/payment-chaos/runs", { headers, data: { type: "payment.gateway_outage" } });
+  expect(started.status()).toBe(201);
+  const run = await started.json();
+  const own = await request.get(root(first.project.id) + "/payment-chaos/runs", { headers });
+  expect(await own.json()).toEqual([expect.objectContaining({ id: run.id, scenario_type: "payment.gateway_outage" })]);
+  const foreign = await request.get(root(second.project.id) + "/payment-chaos/runs", { headers });
+  expect(await foreign.json()).toEqual([]);
+  const canceled = await request.post(root(first.project.id) + "/payment-chaos/runs/" + run.id + "/cancel", { headers });
+  expect(canceled.status()).toBe(204);
+});
+
+test("external workspace traffic goes directly from the browser without project credentials", async ({ page, request }) => {
+  const sample = await seed(request);
+  await signIn(page);
+  await page.getByRole("combobox", { name: "Project" }).selectOption({ label: sample.name });
+  await page.getByRole("link", { name: "API Workspace" }).click();
+  await page.getByLabel("Key ID", { exact: true }).fill(sample.credential.key_id);
+  await page.getByLabel("Key secret", { exact: true }).fill(sample.credential.secret);
+  await page.getByLabel("External HTTPS request").check();
+  await page.getByLabel("Request URL").fill("https://127.0.0.1/health");
+  await page.getByRole("button", { name: "Send request" }).click();
+  await expect(page.getByRole("alert").filter({ hasText: "require an HTTPS hostname" })).toBeVisible();
+  const external = "https://workspace.mock.example.com/status";
+  await page.route(external, async (route) => {
+    const sent = await route.request().allHeaders();
+    expect(sent.authorization).toBeUndefined();
+    expect(sent.cookie).toBeUndefined();
+    expect(sent["x-localpay-workspace-project"]).toBeUndefined();
+    await route.fulfill({ status: 200, contentType: "application/json", body: '{"external":true}', headers: { "Access-Control-Allow-Origin": "*" } });
+  });
+  await page.getByLabel("Request URL").fill(external);
+  await page.getByRole("button", { name: "Send request" }).click();
+  await expect(page.getByRole("region", { name: "Response viewer" }).locator("pre")).toContainText('"external": true');
 });

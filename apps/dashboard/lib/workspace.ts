@@ -24,7 +24,9 @@ export function pairs(input: string, separator = "="): [string, string][] {
   });
 }
 
-export function prepare(draft: Draft, project: string, variables: string, secrets: string, key: string, secret: string, file: File | null) {
+type PreparedRequest = { url: string; init: RequestInit };
+
+export function prepare(draft: Draft, project: string, variables: string, secrets: string, key: string, secret: string, file: File | null): PreparedRequest {
   const values = new Map([["base_url", location.origin], ...pairs(variables), ...pairs(secrets), ["project_id", project], ["key_id", key], ["key_secret", secret]]);
   const expand = (value: string) => value.replace(/{{([\w.-]+)}}/g, (_, name: string) => {
     const result = values.get(name);
@@ -62,12 +64,34 @@ export function prepare(draft: Draft, project: string, variables: string, secret
       } else body = input;
     }
   }
-  return { url: "/api/workspace" + url.pathname + url.search, init: { method: draft.method, headers, body, redirect: "error", cache: "no-store" } satisfies RequestInit };
+  return { url: "/api/workspace" + url.pathname + url.search, init: { method: draft.method, headers, body, redirect: "error", cache: "no-store" } };
 }
 
-export async function execute(prepared: ReturnType<typeof prepare>, signal: AbortSignal) {
+export function prepareExternal(draft: Draft): PreparedRequest {
+  const url = new URL(draft.url);
+  const hostname = url.hostname.toLowerCase();
+  if (url.protocol !== "https:" || url.username || url.password || url.hash || url.port ||
+      !/^([a-z0-9-]+\.)+[a-z]{2,63}$/.test(hostname) ||
+      /\.(?:local|localhost|internal|lan|home|test|invalid|onion)$/.test(hostname) ||
+      url.origin === location.origin || !["GET", "HEAD"].includes(draft.method)) {
+    throw new Error("External requests require an HTTPS hostname and GET or HEAD.");
+  }
+  if ([draft.url, draft.query].some((value) => value.includes("{{"))) {
+    throw new Error("Enter external URLs and query parameters without workspace variables.");
+  }
+  for (const [name, value] of pairs(draft.query)) url.searchParams.append(name, value);
+  return {
+    url: url.href,
+    init: {
+      method: draft.method, cache: "no-store", credentials: "omit", mode: "cors",
+      referrerPolicy: "no-referrer", redirect: "error",
+    },
+  };
+}
+
+export async function execute(prepared: PreparedRequest, signal: AbortSignal) {
   const started = performance.now();
-  const response = await fetch(prepared.url, { ...prepared.init, signal });
+  const response = await fetch(prepared.url, { ...prepared.init, signal: AbortSignal.any([signal, AbortSignal.timeout(12000)]) });
   const bytes = await boundedBody(response, 524288, true);
   const raw = new TextDecoder().decode(bytes);
   const headers = Object.fromEntries(response.headers);

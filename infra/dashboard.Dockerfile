@@ -6,7 +6,7 @@ RUN npm ci
 FROM dependencies AS build
 COPY apps/dashboard ./
 ENV NEXT_TELEMETRY_DISABLED=1
-RUN npm run build
+RUN npm run build -- --webpack
 
 FROM node:22-bookworm-slim
 WORKDIR /srv/dashboard
