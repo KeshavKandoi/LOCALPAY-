@@ -1,7 +1,9 @@
-import { Activity, Beaker, CreditCard, FileBarChart, FlaskConical, LayoutGrid, Package, RotateCcw, Settings, Webhook } from "lucide-react";
+import { Activity, Braces, Beaker, CreditCard, FileBarChart, FlaskConical, LayoutGrid, Package, RotateCcw, Settings, Webhook } from "lucide-react";
 
 export const sections = [
   { key: "overview", label: "Overview", icon: LayoutGrid },
+  { key: "workspace", label: "API Workspace", icon: Braces },
+  { key: "simulator", label: "Payment Simulator", icon: CreditCard },
   { key: "orders", label: "Orders", icon: Package },
   { key: "payments", label: "Payments", icon: CreditCard },
   { key: "refunds", label: "Refunds", icon: RotateCcw },

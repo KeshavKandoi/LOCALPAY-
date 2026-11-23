@@ -1,6 +1,8 @@
 "use client";
 
 import { useProject } from "./shell";
+import { Simulator } from "./simulator";
+import { Workspace } from "./workspace";
 import { Overview, Records } from "./records";
 import { Chaos, Reports, SettingsPanel, Tests, Webhooks } from "./workflows";
 import { sections, type SectionKey } from "@/lib/sections";
@@ -12,6 +14,8 @@ export function Section({ section, initialRun }: { section: SectionKey; initialR
   const title = sections.find((item) => item.key === section)?.label;
   const views = {
     overview: <Overview root={root} />,
+    workspace: <Workspace project={project.id} />,
+    simulator: <Simulator project={project.id} />,
     orders: <Records root={root} resource="orders" />,
     payments: <Records root={root} resource="payments" />,
     refunds: <Records root={root} resource="refunds" />,
