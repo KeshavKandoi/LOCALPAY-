@@ -75,3 +75,25 @@ def test_invalid_environment_is_rejected(
     monkeypatch.setenv(f"LOCALPAY_{variable}", value)
     with pytest.raises(ValidationError):
         Settings()
+
+
+def test_api_caps_request_size_without_echoing_body() -> None:
+    settings = Settings(request_limit_bytes=4096)
+    with TestClient(create_app(settings)) as client:
+        response = client.post(
+            "/localpay/admin/v1/projects",
+            content="secret-value" * 500,
+            headers={"Content-Type": "application/json"},
+        )
+    assert response.status_code == 413
+    assert response.json() == {"error": {"code": "request_too_large"}}
+
+
+def test_api_caps_streamed_request_size() -> None:
+    settings = Settings(request_limit_bytes=4096)
+    with TestClient(create_app(settings)) as client:
+        response = client.post(
+            "/v1/orders",
+            content=iter((b"x" * 3000, b"y" * 3000)),
+        )
+    assert response.status_code == 413

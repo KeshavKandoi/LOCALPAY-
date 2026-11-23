@@ -59,7 +59,45 @@ class ServerErrorMiddleware:
             await response(scope, receive, send)
 
 
+class RequestSizeLimit:
+    def __init__(self, app: ASGIApp) -> None:
+        self.app = app
+
+    async def __call__(self, scope: Scope, receive: Receive, send: Send) -> None:
+        if scope["type"] != "http" or scope["method"] not in {"POST", "PUT", "PATCH"}:
+            await self.app(scope, receive, send)
+            return
+
+        request = Request(scope)
+        limit: int = request.app.state.settings.request_limit_bytes
+        payload = bytearray()
+        while True:
+            message = await receive()
+            if message["type"] == "http.disconnect":
+                return
+            chunk = message.get("body", b"")
+            if len(payload) + len(chunk) > limit:
+                response = error_response("request_too_large", 413)
+                await response(scope, receive, send)
+                return
+            payload.extend(chunk)
+            if not message.get("more_body", False):
+                break
+
+        replayed = False
+
+        async def replay() -> Message:
+            nonlocal replayed
+            if replayed:
+                return await receive()
+            replayed = True
+            return {"type": "http.request", "body": bytes(payload), "more_body": False}
+
+        await self.app(scope, replay, send)
+
+
 def install_error_handling(app: FastAPI) -> None:
+    app.add_middleware(RequestSizeLimit)
     app.add_middleware(ServerErrorMiddleware)
     app.add_exception_handler(HTTPException, http_error)
     app.add_exception_handler(RequestValidationError, validation_error)

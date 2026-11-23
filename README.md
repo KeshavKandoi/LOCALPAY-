@@ -9,13 +9,14 @@ LocalPay is a self-hosted development tool for testing payment integrations. The
 Use Docker with Compose v2. From the repository root:
 
 ```sh
-cp .env.example .env
+uv tool install ./packages/cli
+localpay init
 docker compose up --build --detach --wait
 curl -fsS http://127.0.0.1:8000/health
 curl -fsS http://127.0.0.1:8000/ready
 ```
 
-The API binds to loopback on port 8000 by default. Set `LOCALPAY_API_PORT` in `.env` to change it. Set a URL-safe development value for `LOCALPAY_POSTGRES_PASSWORD` before starting a new database. The example password is for disposable local development. PostgreSQL and Redis use the Compose network and have no host port mappings.
+The API binds to loopback on port 8000 by default. Set `LOCALPAY_API_PORT` in `.env` to change it. Set a URL-safe development value for `LOCALPAY_POSTGRES_PASSWORD` before starting a new database. The CLI generates a unique password and keeps it in the ignored local environment file. PostgreSQL and Redis share a private Compose network and have no host port mappings.
 
 `GET /health` reports API liveness. `GET /ready` checks PostgreSQL and Redis and returns HTTP 503 with per-dependency status when either is unavailable. Compose separately verifies that the Celery worker responds to a broker-mediated ping. A one-shot Alembic service applies the current schema migrations before the API and worker boot. PostgreSQL data persists across `docker compose down` and subsequent starts.
 
@@ -136,3 +137,9 @@ The Python, FastAPI, Node.js, and Express sample applications demonstrate checko
 The GitHub Actions workflow runs `bash scripts/ci.sh` in a disposable Compose project. It starts a real Express receiver, verifies duplicate webhook delivery and the receiver's independent event count, runs both sample apps, and executes the backend and browser regressions. The script removes its isolated database and network on exit.
 
 `localpay test run` prints JSON and exits with 0 for passed, 1 for failed, 2 for error, 3 for inconclusive, and 4 when its wait deadline is blocked. A blocked result includes the run ID for later inspection. Export completed results with `localpay test report RUN_ID --format junit`, `--format json`, or `--format html`. JUnit exports represent inconclusive cases as skipped.
+
+## Verify resilience and performance
+
+Set `LOCALPAY_EXTENDED_VERIFY=1` when invoking `bash scripts/ci.sh` to exercise PostgreSQL, Redis, and worker interruption in the disposable environment and collect a load report. The report captures stage throughput, API latency, queue latency, PostgreSQL query timing, and container resource samples. These measurements describe the test environment and its configured workload.
+
+Application containers run without added Linux capabilities and expose the API and dashboard through loopback. The gateway limits request size, the dashboard bounds authentication requests, and webhook delivery is restricted to explicitly pinned local destinations.

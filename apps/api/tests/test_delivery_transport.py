@@ -108,3 +108,10 @@ def test_simulated_failures_record_evidence_without_network(
     assert result.http_status == status
     assert result.error_code == reason
     assert result.retryable
+
+
+def test_live_gateway_dns_name_is_blocked_even_if_pinned_to_local_ip() -> None:
+    with pytest.raises(ValueError, match="Live gateway"):
+        pin_destination(
+            "http://api.razorpay.com/webhook", {"http://api.razorpay.com": "127.0.0.1"}
+        )

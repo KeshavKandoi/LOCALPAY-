@@ -36,6 +36,7 @@ class CliTests(unittest.TestCase):
             "file:///etc/passwd",
             "https://a:b@localhost",
             "http://localhost/path",
+            "https://api.razorpay.com",
         ):
             with self.assertRaises(CliError):
                 Client(origin, None)

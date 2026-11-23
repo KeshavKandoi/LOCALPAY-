@@ -21,6 +21,7 @@ class Settings(BaseSettings):
     webhook_max_attempts: int = Field(default=5, ge=1, le=10)
     webhook_timeout_seconds: int = Field(default=3, ge=1, le=5)
     webhook_retry_seconds: int = Field(default=2, ge=1, le=60)
+    request_limit_bytes: int = Field(default=196608, ge=4096, le=1048576)
     dependency_timeout_seconds: int = Field(default=2, ge=1, le=10)
 
     @field_validator("admin_token", mode="before")

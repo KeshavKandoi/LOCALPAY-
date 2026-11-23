@@ -1,6 +1,10 @@
 x-app: &app
   image: localpay-api:dev
   pull_policy: never
+  mem_limit: 512m
+  cap_drop: ["ALL"]
+  security_opt: ["no-new-privileges:true"]
+  networks: [backend]
   environment: &app-environment
     LOCALPAY_DATABASE_URL: postgresql+psycopg://localpay:${LOCALPAY_POSTGRES_PASSWORD:?Set LOCALPAY_POSTGRES_PASSWORD in .env}@postgres:5432/localpay
     LOCALPAY_REDIS_URL: redis://redis:6379/0
@@ -11,7 +15,8 @@ x-app: &app
 
 services:
   postgres:
-    image: postgres:18.3-bookworm
+    networks: [backend]
+    image: postgres:18.7-bookworm
     environment:
       POSTGRES_USER: localpay
       POSTGRES_PASSWORD: ${LOCALPAY_POSTGRES_PASSWORD:?Set LOCALPAY_POSTGRES_PASSWORD in .env}
@@ -25,7 +30,8 @@ services:
       retries: 20
 
   redis:
-    image: redis:7.4.8-bookworm
+    networks: [backend]
+    image: redis:7.4.12-bookworm
     healthcheck:
       test: ["CMD", "redis-cli", "ping"]
       interval: 3s
@@ -41,6 +47,7 @@ services:
 
   api:
     <<: *app
+    networks: [backend, default]
     environment:
       <<: *app-environment
       LOCALPAY_ADMIN_TOKEN: ${LOCALPAY_ADMIN_TOKEN:-}
@@ -62,6 +69,7 @@ services:
 
   worker:
     <<: *app
+    networks: [backend, default]
     command: ["celery", "-A", "app.workers.celery_app:celery_app", "worker", "--loglevel=INFO", "--concurrency=2"]
     depends_on:
       migrate:
@@ -76,6 +84,7 @@ services:
 
   reliability-worker:
     <<: *app
+    networks: [backend, default]
     command: ["celery", "-A", "app.workers.celery_app:celery_app", "worker", "--loglevel=INFO", "--concurrency=1", "--queues=${LOCALPAY_CELERY_QUEUE:-celery}.reliability", "--hostname=reliability@%h"]
     depends_on:
       migrate:
@@ -97,6 +106,9 @@ services:
 
   dashboard:
     image: localpay-dashboard:dev
+    mem_limit: 512m
+    cap_drop: ["ALL"]
+    security_opt: ["no-new-privileges:true"]
     pull_policy: never
     build:
       context: .
@@ -134,3 +146,7 @@ services:
 
 volumes:
   pgdata:
+
+networks:
+  backend:
+    internal: true

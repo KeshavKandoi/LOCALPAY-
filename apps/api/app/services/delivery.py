@@ -64,6 +64,9 @@ def pin_destination(url: str, targets: dict[str, str]) -> tuple[httpx.URL, str]:
         or parsed.fragment
     ):
         raise ValueError("Invalid webhook target")
+    host_name = parsed.host.rstrip(".").lower()
+    if host_name == "razorpay.com" or host_name.endswith(".razorpay.com"):
+        raise ValueError("Live gateway hosts are forbidden")
     origin = str(parsed.copy_with(path="/", query=None, fragment=None)).removesuffix(
         "/"
     )

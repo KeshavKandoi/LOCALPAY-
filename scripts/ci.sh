@@ -14,6 +14,9 @@ export LOCALPAY_E2E_API_URL="$LOCALPAY_API_URL"
 export LOCALPAY_E2E_DASHBOARD_URL="http://127.0.0.1:$LOCALPAY_DASHBOARD_PORT"
 export LOCALPAY_E2E_TOKEN="$LOCALPAY_ADMIN_TOKEN"
 unset NO_COLOR
+if [ "${GITHUB_ACTIONS:-}" = true ]; then
+  printf '::add-mask::%s\n' "$LOCALPAY_ADMIN_TOKEN" "$LOCALPAY_WEBHOOK_ENCRYPTION_KEY" "$LOCALPAY_POSTGRES_PASSWORD" "$LOCALPAY_RECEIVER_SECRET" "$LOCALPAY_VERIFICATION_TOKEN"
+fi
 
 results="${LOCALPAY_CI_RESULTS:-.localpay-ci}"
 mkdir -p "$results"
@@ -53,3 +56,7 @@ python3 scripts/ci_suites.py "$results"
 python3 scripts/ci_suites.py "$results" --verify-blocked
 "${compose[@]}" start reliability-worker
 npm test --prefix apps/dashboard | tee "$results/browser.txt"
+if [ "${LOCALPAY_EXTENDED_VERIFY:-0}" = 1 ]; then
+  python3 scripts/resilience.py "$results/resilience.json"
+  python3 scripts/benchmark.py "$results/benchmark.json"
+fi

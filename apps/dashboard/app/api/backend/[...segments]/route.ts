@@ -1,3 +1,4 @@
+import { BodyTooLarge, boundedBody } from "@/lib/request";
 import { NextRequest, NextResponse } from "next/server";
 import { sameOrigin, sessionName, validSession } from "@/lib/session";
 
@@ -25,7 +26,7 @@ async function handle(request: NextRequest, context: { params: Promise<{ segment
     target.search = request.nextUrl.search;
     const response = await fetch(target, {
       method: request.method, cache: "no-store", redirect: "error", signal: AbortSignal.timeout(8000),
-      body: request.method === "GET" ? undefined : await request.text(),
+      body: request.method === "GET" ? undefined : await boundedBody(request, 196608),
       headers: { Authorization: "Bearer " + process.env.LOCALPAY_ADMIN_TOKEN, "Content-Type": "application/json" },
     });
     const headers = new Headers({ "Cache-Control": "no-store", "X-Content-Type-Options": "nosniff" });
@@ -34,7 +35,8 @@ async function handle(request: NextRequest, context: { params: Promise<{ segment
       if (value) headers.set(key, value);
     }
     return new Response(response.body, { status: response.status, headers });
-  } catch {
+  } catch (error) {
+    if (error instanceof BodyTooLarge) return NextResponse.json({ error: "Request too large" }, { status: 413 });
     return NextResponse.json({ error: "LocalPay API is unreachable" }, { status: 502 });
   }
 }

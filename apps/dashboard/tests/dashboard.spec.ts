@@ -112,3 +112,27 @@ test("webhook replay, payment chaos, reliability execution, and export", async (
   await page.getByRole("link", { name: "Export HTML" }).click();
   expect((await download).suggestedFilename()).toMatch(/^localpay-report-.*\.html$/);
 });
+
+test("dashboard authentication caps request size and rejects cross-origin login", async ({ request, baseURL }) => {
+  if (!token || !baseURL) throw new Error("Dashboard test environment is required");
+  const origin = new URL(baseURL).origin;
+  const csrf = await request.post("/api/session", { headers: { origin: "http://127.0.0.1:1" }, data: { token } });
+  expect(csrf.status()).toBe(403);
+  const oversized = await request.post("/api/session", { headers: { origin }, data: { token: "x".repeat(1100) } });
+  expect(oversized.status()).toBe(413);
+  let throttled = false;
+  for (let attempt = 0; attempt < 21; attempt++) {
+    const denied = await request.post("/api/session", { headers: { origin }, data: { token: "invalid" } });
+    if (denied.status() === 429) {
+      expect(Number(denied.headers()["retry-after"])).toBeGreaterThan(0);
+      throttled = true;
+      break;
+    }
+    expect(denied.status()).toBe(401);
+  }
+  expect(throttled).toBe(true);
+  const valid = await request.post("/api/session", { headers: { origin }, data: { token } });
+  expect(valid.status()).toBe(200);
+  expect(valid.headers()["set-cookie"]).toContain("HttpOnly");
+  expect(valid.headers()["set-cookie"]).not.toContain(token);
+});

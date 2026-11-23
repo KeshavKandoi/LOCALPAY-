@@ -9,7 +9,7 @@ from time import monotonic, sleep
 from typing import Any
 from urllib.error import HTTPError, URLError
 from urllib.parse import urlsplit
-from urllib.request import HTTPRedirectHandler, Request, build_opener
+from urllib.request import HTTPRedirectHandler, ProxyHandler, Request, build_opener
 from uuid import UUID
 
 EXIT = {"passed": 0, "failed": 1, "error": 2, "inconclusive": 3}
@@ -116,9 +116,15 @@ class Client:
             or parsed.fragment
         ):
             raise CliError("Use an HTTP or HTTPS origin for --api-url.")
+        if parsed.hostname.lower().rstrip(
+            "."
+        ) == "razorpay.com" or parsed.hostname.lower().rstrip(".").endswith(
+            ".razorpay.com"
+        ):
+            raise CliError("Use the LocalPay server origin.")
         self.origin = origin.rstrip("/")
         self.admin = admin
-        self.opener = build_opener(NoRedirect())
+        self.opener = build_opener(ProxyHandler({}), NoRedirect())
 
     def send(self, path: str, method: str = "GET", data: object | None = None) -> bytes:
         headers = {"Content-Type": "application/json"}
@@ -134,7 +140,10 @@ class Client:
         )
         try:
             with self.opener.open(request, timeout=10) as response:
-                return bytes(response.read())
+                body = response.read(8_388_609)
+                if len(body) > 8_388_608:
+                    raise CliError("LocalPay response exceeds 8 MiB.")
+                return bytes(body)
         except HTTPError as exc:
             raise CliError(
                 f"LocalPay returned HTTP {exc.code} for {method} {path}."
