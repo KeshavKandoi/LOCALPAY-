@@ -1,0 +1,80 @@
+{
+  "host": "Darwin 27.2.0 arm64",
+  "docker": "Docker Desktop; aarch64; CPUs=8; memory=8319770624 bytes; engine=29.7.2",
+  "concurrency": 8,
+  "stage_results": {
+    "orders": {
+      "operations": 60,
+      "elapsed_seconds": 0.338,
+      "operations_per_second": 177.59,
+      "p50_ms": 41.498,
+      "p95_ms": 65.861
+    },
+    "simulate": {
+      "operations": 60,
+      "elapsed_seconds": 0.342,
+      "operations_per_second": 175.39,
+      "p50_ms": 42.97,
+      "p95_ms": 62.45
+    },
+    "capture": {
+      "operations": 60,
+      "elapsed_seconds": 0.542,
+      "operations_per_second": 110.71,
+      "p50_ms": 67.509,
+      "p95_ms": 111.193
+    },
+    "webhooks": {
+      "delivered": 60,
+      "operations_per_second": 12.36,
+      "recorded_seconds": 4.855,
+      "observed_wall_seconds": 5.291
+    },
+    "refund": {
+      "operations": 60,
+      "elapsed_seconds": 0.924,
+      "operations_per_second": 64.91,
+      "p50_ms": 121.605,
+      "p95_ms": 196.939
+    },
+    "retries": {
+      "delivered": 12,
+      "seconds": 4.73,
+      "operations_per_second": 2.54
+    }
+  },
+  "api_latency": {
+    "p50_ms": 59.094,
+    "p95_ms": 145.532
+  },
+  "queue_to_attempt_completion_latency": {
+    "p50_ms": 2463.924,
+    "p95_ms": 3904.357
+  },
+  "postgresql": {
+    "planning_ms": 1.689,
+    "execution_ms": 0.833
+  },
+  "container_resource_samples": [
+    {
+      "service": "api",
+      "cpu": "0.16%",
+      "memory": "82.88MiB / 512MiB"
+    },
+    {
+      "service": "postgres",
+      "cpu": "17.39%",
+      "memory": "43MiB / 7.748GiB"
+    },
+    {
+      "service": "redis",
+      "cpu": "3.50%",
+      "memory": "7.57MiB / 7.748GiB"
+    },
+    {
+      "service": "worker",
+      "cpu": "130.46%",
+      "memory": "220.3MiB / 512MiB"
+    }
+  ]
+}
