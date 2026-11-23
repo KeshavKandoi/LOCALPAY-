@@ -138,3 +138,13 @@ td, th { padding: 12px 17px; border-bottom: 1px solid var(--border); }
   .overview-banner { align-items: flex-start; flex-direction: column; padding: 16px; }
   .metric { padding: 12px; }
 }
+
+.workspace-editor { display: grid; grid-template-columns: minmax(0, 1.1fr) minmax(0, 1fr); gap: 16px; align-items: start; }
+.workspace-request-line { display: grid; grid-template-columns: 100px minmax(0, 1fr); gap: 10px; }
+.workspace-actions { display: flex; flex-wrap: wrap; gap: 8px; }
+.workspace-code { font-family: ui-monospace, monospace; font-size: .9rem; }
+.workspace-response .payload { max-height: 60vh; }
+.workspace-editor li { overflow-wrap: anywhere; }
+@media (max-width: 1050px) {
+  .workspace-editor { grid-template-columns: minmax(0, 1fr); }
+}

@@ -34,7 +34,7 @@ async function seed(request: APIRequestContext) {
   expect(capture.status()).toBe(200);
   const refund = await request.post(apiOrigin + "/v1/payments/" + paymentData.id + "/refund", { headers: auth, data: { amount: 300 } });
   expect(refund.status()).toBe(200);
-  return { name, project, order: orderData.id as string, payment: paymentData.id as string, refund: (await refund.json()).id as string };
+  return { name, project, credential, order: orderData.id as string, payment: paymentData.id as string, refund: (await refund.json()).id as string };
 }
 
 test("authentication protects the dashboard and mobile views fit", async ({ page, request }) => {
@@ -135,4 +135,102 @@ test("dashboard authentication caps request size and rejects cross-origin login"
   expect(valid.status()).toBe(200);
   expect(valid.headers()["set-cookie"]).toContain("HttpOnly");
   expect(valid.headers()["set-cookie"]).not.toContain(token);
+});
+
+test("API Workspace sends real requests and isolates selected projects", async ({ page, request }) => {
+  const unauthorized = await request.get("/api/workspace/health");
+  expect(unauthorized.status()).toBe(401);
+  const sample = await seed(request);
+  const other = await seed(request);
+  await signIn(page);
+  await page.getByRole("combobox", { name: "Project" }).selectOption({ label: sample.name });
+  await page.getByRole("link", { name: "API Workspace" }).click();
+  await page.getByRole("button", { name: "Environment", exact: true }).click();
+  await page.getByRole("textbox", { name: /^Variables / }).fill("receipt=workspace-real-order");
+  await page.getByRole("button", { name: "Request", exact: true }).click();
+  await page.getByLabel("Payment request templates").selectOption({ label: "Create order" });
+  await page.getByLabel("Request body").fill('{"amount":50000,"currency":"INR","receipt":"{{receipt}}"}');
+  await page.getByLabel("Key ID", { exact: true }).fill(sample.credential.key_id);
+  await page.getByLabel("Key secret", { exact: true }).fill(sample.credential.secret);
+  await page.getByLabel("Response assertions").fill("status = 200\njson.id exists\njson.amount = 50000");
+  await page.getByRole("button", { name: "Save request" }).click();
+  await page.getByRole("button", { name: "Send request" }).click();
+  const viewer = page.getByRole("region", { name: "Response viewer" });
+  await expect(viewer.getByRole("status")).toContainText("HTTP 200");
+  await expect(viewer.getByText("Passed", { exact: true })).toHaveCount(3);
+  await expect(viewer.locator("pre")).toContainText("workspace-real-order");
+  const proxy = await page.evaluate(async ({ project, other }) => {
+    const headers = {
+      "x-localpay-workspace-project": project,
+      authorization: "Basic " + btoa(other.key_id + ":" + other.secret),
+    };
+    const rejected = await fetch("/api/workspace/v1/orders", { headers });
+    const unsupported = await fetch("/api/workspace/localpay/admin/v1/projects", { headers });
+    return { rejected: rejected.status, unsupported: unsupported.status };
+  }, { project: sample.project.id, other: other.credential });
+  expect(proxy).toEqual({ rejected: 403, unsupported: 404 });
+  await page.reload();
+  await page.getByRole("combobox", { name: "Project" }).selectOption({ label: sample.name });
+  await page.getByRole("button", { name: "History", exact: true }).click();
+  await expect(page.getByText("POST · HTTP 200", { exact: false })).toBeVisible();
+  await page.getByRole("button", { name: "Open saved request" }).click();
+  await expect(page.getByLabel("Key secret", { exact: true })).toHaveValue("");
+  await page.getByLabel("Key ID", { exact: true }).fill(sample.credential.key_id);
+  await page.getByLabel("Key secret", { exact: true }).fill(sample.credential.secret);
+  await page.getByRole("button", { name: "Send request" }).click();
+  await expect(viewer.getByRole("status")).toContainText("HTTP 400");
+  await expect(viewer.locator("pre")).toContainText("Duplicate request.");
+  const stored = await page.evaluate(() => Object.values(localStorage).join("\n"));
+  expect(stored).not.toContain(sample.credential.secret);
+  await page.getByRole("combobox", { name: "Project" }).selectOption({ label: other.name });
+  await page.getByRole("button", { name: "Collections", exact: true }).click();
+  await expect(page.getByText("No saved requests.")).toBeVisible();
+});
+
+test("Payment Simulator runs the order, authorization, capture, and refund lifecycle", async ({ page, request }) => {
+  const sample = await seed(request);
+  await signIn(page);
+  await page.getByRole("combobox", { name: "Project" }).selectOption({ label: sample.name });
+  await page.getByRole("link", { name: "Payment Simulator" }).click();
+  await page.getByLabel("Key ID", { exact: true }).fill(sample.credential.key_id);
+  await page.getByLabel("Key secret", { exact: true }).fill(sample.credential.secret);
+  await page.getByLabel("Amount in minor currency units").fill("900");
+  await page.getByLabel("Receipt").fill("simulator-lifecycle");
+  await page.getByRole("button", { name: "Create order", exact: true }).click();
+  const lifecycle = page.getByRole("region", { name: "Payment lifecycle" });
+  await expect(lifecycle.getByText("order · created")).toBeVisible();
+  await page.getByRole("button", { name: "Simulate payment", exact: true }).click();
+  await expect(lifecycle.getByText("payment · authorized")).toBeVisible();
+  await page.getByRole("button", { name: "Capture payment", exact: true }).click();
+  await expect(lifecycle.getByText("payment · captured")).toBeVisible();
+  await page.getByLabel("Amount (blank for full refund)").fill("300");
+  await page.getByRole("button", { name: "Refund payment", exact: true }).click();
+  await expect(lifecycle.getByText("refund · processed")).toBeVisible();
+  const result = page.getByRole("region", { name: "Payment action response" });
+  await expect(result.getByRole("status")).toContainText("HTTP 200");
+  await expect(result.locator("pre")).toContainText('"amount": 300');
+});
+
+test("API Workspace imports LocalPay paths from OpenAPI, Postman, and cURL", async ({ page, request }) => {
+  const sample = await seed(request);
+  await signIn(page);
+  await page.getByRole("combobox", { name: "Project" }).selectOption({ label: sample.name });
+  await page.getByRole("link", { name: "API Workspace" }).click();
+  await page.getByRole("button", { name: "Collections", exact: true }).click();
+  const input = page.getByLabel("Import requests");
+  await input.setInputFiles({ name: "orders.json", mimeType: "application/json", buffer: Buffer.from(JSON.stringify({
+    openapi: "3.1.0", info: { title: "Orders" }, paths: { "/v1/orders/{order_id}": { get: { summary: "Read order" } } },
+  })) });
+  await expect(page.getByRole("button", { name: "Orders / Read order" })).toBeVisible();
+  await input.setInputFiles({ name: "collection.json", mimeType: "application/json", buffer: Buffer.from(JSON.stringify({
+    info: { name: "Gateway", schema: "https://schema.getpostman.com/json/collection/v2.1.0/collection.json" }, item: [{
+      name: "Orders", item: [{ name: "List", request: { method: "GET", url: "{{baseUrl}}/v1/orders" } }],
+    }],
+  })) });
+  await expect(page.getByRole("button", { name: "Gateway/Orders / List" })).toBeVisible();
+  await input.setInputFiles({ name: "health.curl", mimeType: "text/plain", buffer: Buffer.from("curl -X GET 'https://example.com/health'") });
+  await page.getByRole("button", { name: "cURL imports / GET /health" }).click();
+  await expect(page.getByLabel("Request URL")).toHaveValue("/health");
+  await page.getByRole("button", { name: "Send request" }).click();
+  await expect(page.getByRole("region", { name: "Response viewer" }).getByRole("status")).toContainText("HTTP 200");
 });
