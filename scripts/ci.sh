@@ -26,6 +26,13 @@ cleanup() {
   local code="$?"
   if [ "$code" -ne 0 ]; then
     "${compose[@]}" ps --all >"$results/compose-status.txt" 2>&1 || true
+    for service in api dashboard worker reliability-worker scheduler postgres redis; do
+      local container
+      container="$("${compose[@]}" ps --all --quiet "$service" 2>/dev/null)" || continue
+      if [ -n "$container" ]; then
+        docker inspect --format '{{.Name}} OOM={{.State.OOMKilled}} {{if .State.Health}}{{.State.Health.Status}}{{range .State.Health.Log}}{{printf "\n  %s %s exit=%d" .Start .End .ExitCode}}{{end}}{{end}}' "$container"
+      fi
+    done >"$results/health-timing.txt" 2>&1 || true
   fi
   if "${compose[@]}" down --volumes --remove-orphans >"$results/cleanup.txt" 2>&1; then
     exit "$code"

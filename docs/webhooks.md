@@ -7,3 +7,5 @@ Register the receiver in Settings or post its URL, secret, and enabled event nam
 Verify the HMAC-SHA256 digest of the exact request bytes against `X-Razorpay-Signature` using a constant-time comparison. Deduplicate by `X-Razorpay-Event-Id` before applying business changes. An HTTP 2xx acknowledgement completes that attempt. HTTP 408, 429, 5xx, and transport failures retry within the configured budget.
 
 The worker retries the same event bytes and identity. A lease expiry may lead to a duplicate even after a receiver has already acted. Use the [sample receivers](../examples/README.md) to see raw-body verification and idempotency.
+
+The Webhooks page also registers receivers and enables or disables them. Open an event to verify its original payload with the subscribed receiver’s signing secret. Verification uses the browser’s Web Crypto API and requires localhost or HTTPS. Open a delivery to inspect its attempts or return to its event for a fresh replay. In Chaos Lab, configure the burst interval, failure attempts, and total attempt limit to exercise retry behavior.
