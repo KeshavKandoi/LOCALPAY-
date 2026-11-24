@@ -11,8 +11,8 @@ class Settings(BaseSettings):
         env_prefix="LOCALPAY_", hide_input_in_errors=True, env_ignore_empty=True
     )
 
-    database_url: PostgresDsn
-    redis_url: RedisDsn
+    database_url: PostgresDsn = Field(repr=False)
+    redis_url: RedisDsn = Field(repr=False)
     admin_token: SecretStr | None = None
     verification_token: SecretStr | None = None
     webhook_encryption_key: SecretStr | None = None

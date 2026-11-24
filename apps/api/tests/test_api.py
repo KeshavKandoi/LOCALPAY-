@@ -16,6 +16,21 @@ def configure_environment(monkeypatch: MonkeyPatch) -> None:
     monkeypatch.setenv("LOCALPAY_DEPENDENCY_TIMEOUT_SECONDS", "1")
 
 
+def test_settings_repr_omits_connection_credentials(monkeypatch: MonkeyPatch) -> None:
+    monkeypatch.setenv(
+        "LOCALPAY_DATABASE_URL",
+        "postgresql+psycopg://localpay:private-postgres@localhost:1/localpay",
+    )
+    monkeypatch.setenv("LOCALPAY_REDIS_URL", "redis://:private-redis@localhost:1/0")
+
+    settings = Settings()
+
+    assert settings.database_url.hosts()[0]["password"] == "private-postgres"
+    assert settings.redis_url.password == "private-redis"
+    assert "private-postgres" not in repr(settings)
+    assert "private-redis" not in repr(settings)
+
+
 def test_application_import() -> None:
     assert app.title == "LocalPay"
 

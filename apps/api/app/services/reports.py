@@ -258,6 +258,15 @@ def reliability_report(session: Session, run: ReliabilityTestRun) -> JsonObject:
 def render_report(report: JsonObject) -> str:
     heading = escape(str(report["suite_name"]))
     status = escape(str(report["status"]))
+    metadata = "".join(
+        f"<dt>{label}</dt><dd>{escape(str(report[key])) if report[key] is not None else 'Unavailable'}</dd>"
+        for label, key in (
+            ("Execution ID", "run_id"),
+            ("Started at", "started_at"),
+            ("Finished at", "finished_at"),
+            ("Duration (ms)", "duration_ms"),
+        )
+    )
     summary = report["summary"]
     rows = "".join(
         f'<tr><th scope="row">{escape(key.replace("_", " ").title())}</th>'
@@ -273,7 +282,8 @@ def render_report(report: JsonObject) -> str:
         '<!doctype html><html lang="en"><meta charset="utf-8">'
         '<meta name="viewport" content="width=device-width, initial-scale=1">'
         f"<title>LocalPay report · {heading}</title><main><h1>{heading}</h1>"
-        f"<p>Run status: {status}</p><table><caption>Test results</caption>{rows}</table>"
+        f"<p>Run status: {status}</p><dl>{metadata}</dl>"
+        f"<table><caption>Test results</caption>{rows}</table>"
         f"{cases}</main></html>"
     )
 
@@ -301,6 +311,16 @@ def render_junit(run: ReliabilityTestRun) -> str:
             "time": f"{(source.get('duration_ms') or 0) / 1000:.3f}",
         },
     )
+    if run.started_at is not None:
+        root.set("timestamp", run.started_at.isoformat())
+    properties = SubElement(root, "properties")
+    SubElement(properties, "property", {"name": "run_id", "value": str(run.id)})
+    if run.finished_at is not None:
+        SubElement(
+            properties,
+            "property",
+            {"name": "finished_at", "value": run.finished_at.isoformat()},
+        )
     for case in cases:
         step = SubElement(
             root,

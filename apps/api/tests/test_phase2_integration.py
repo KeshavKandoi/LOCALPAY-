@@ -10,6 +10,7 @@ from threading import Barrier, Thread
 from time import monotonic, sleep
 from typing import Any
 from uuid import UUID, uuid4
+from xml.etree.ElementTree import fromstring
 
 import pytest
 from alembic.config import Config
@@ -853,7 +854,7 @@ def test_pending_refund_releases_balance_when_failed(admin_client: TestClient) -
 
 
 def test_concurrent_refunds_cannot_exceed_capture(
-    admin_client: TestClient, schema_settings: Settings
+    admin_client: TestClient,
 ) -> None:
     key = issue(admin_client, add_project(admin_client, "concurrent-refund"))
     auth = (key["key_id"], key["secret"])
@@ -862,11 +863,10 @@ def test_concurrent_refunds_cannot_exceed_capture(
     barrier = Barrier(2)
 
     def refund_one(amount: int) -> int:
-        with TestClient(create_app(schema_settings)) as client:
-            barrier.wait(timeout=10)
-            return client.post(
-                f"{path}/refund", auth=auth, json={"amount": amount}
-            ).status_code
+        barrier.wait(timeout=10)
+        return admin_client.post(
+            f"{path}/refund", auth=auth, json={"amount": amount}
+        ).status_code
 
     with ThreadPoolExecutor(max_workers=2) as executor:
         assert sorted(executor.map(refund_one, [500, 500])) == [200, 400]
@@ -1626,7 +1626,10 @@ def test_report_correlates_delivery_attempts_and_measured_latency(
             project_id=owner,
             suite_name="<script>alert(1)</script>",
             status="failed",
+            started_at=now - timedelta(milliseconds=125),
+            finished_at=now,
             result={
+                "duration_ms": 125,
                 "cases": [
                     {
                         "name": "duplicates",
@@ -1664,6 +1667,23 @@ def test_report_correlates_delivery_attempts_and_measured_latency(
     report = admin_client.get(f"{root}/test-runs/{run_id}/report/html")
     assert "<script>" not in report.text
     assert "&lt;script&gt;" in report.text
+    assert result["run_id"] == str(run_id)
+    assert result["started_at"] == (now - timedelta(milliseconds=125)).isoformat()
+    assert result["finished_at"] == now.isoformat()
+    assert result["duration_ms"] == 125
+    for key in ("run_id", "started_at", "finished_at", "duration_ms"):
+        assert f"<dd>{result[key]}</dd>" in report.text
+
+    junit = admin_client.get(f"{root}/test-runs/{run_id}/report/junit")
+    assert junit.status_code == 200
+    xml = fromstring(junit.text)
+    assert xml.attrib["timestamp"] == result["started_at"]
+    assert xml.attrib["time"] == "0.125"
+    assert xml.attrib["failures"] == str(result["summary"]["failed"])
+    assert {
+        prop.attrib["name"]: prop.attrib["value"]
+        for prop in xml.findall("properties/property")
+    } == {"run_id": str(run_id), "finished_at": result["finished_at"]}
 
 
 @pytest.mark.parametrize("trigger", ["poll", "scheduler"])
